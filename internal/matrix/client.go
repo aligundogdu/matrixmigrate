@@ -1,4 +1,4 @@
-package matrix
+﻿package matrix
 
 import (
 	"bytes"
@@ -7,7 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/aligundogdu/matrixmigrate/internal/logger"
 )
 
 // Client represents a Matrix API client
@@ -16,6 +20,11 @@ type Client struct {
 	adminToken string
 	httpClient *http.Client
 	homeserver string
+	
+	// Rate limiting
+	lastRequest time.Time
+	rateLimit   time.Duration
+	mu          sync.Mutex
 }
 
 // NewClient creates a new Matrix API client
@@ -27,11 +36,68 @@ func NewClient(baseURL, adminToken, homeserver string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		rateLimit: 100 * time.Millisecond, // 100ms between requests (10 req/sec)
 	}
 }
 
-// doRequest performs an HTTP request to the Matrix API
+// SetHomeserver updates the homeserver domain
+func (c *Client) SetHomeserver(homeserver string) {
+	c.homeserver = homeserver
+}
+
+// GetHomeserver returns the current homeserver domain
+func (c *Client) GetHomeserver() string {
+	return c.homeserver
+}
+
+// DetectHomeserver detects the homeserver from the authenticated user ID
+// Returns the detected homeserver or error
+func (c *Client) DetectHomeserver() (string, error) {
+	resp, err := c.WhoAmI()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	// Parse homeserver from user ID (format: @user:homeserver)
+	userID := resp.UserID
+	if userID == "" {
+		return "", fmt.Errorf("no user_id in response")
+	}
+
+	// Find the : separator
+	idx := strings.Index(userID, ":")
+	if idx == -1 {
+		return "", fmt.Errorf("invalid user_id format: %s", userID)
+	}
+
+	homeserver := userID[idx+1:]
+	if homeserver == "" {
+		return "", fmt.Errorf("empty homeserver in user_id: %s", userID)
+	}
+
+	logger.Info("Detected homeserver from user ID '%s': %s", userID, homeserver)
+	return homeserver, nil
+}
+
+// doRequest performs an HTTP request to the Matrix API with rate limiting
 func (c *Client) doRequest(method, endpoint string, body interface{}) ([]byte, int, error) {
+	return c.doRequestWithRetry(method, endpoint, body, 0)
+}
+
+// doRequestWithRetry performs an HTTP request with retry logic for rate limiting
+func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, retryCount int) ([]byte, int, error) {
+	const maxRetries = 3
+	
+	// Rate limiting: ensure minimum time between requests
+	c.mu.Lock()
+	elapsed := time.Since(c.lastRequest)
+	if elapsed < c.rateLimit {
+		sleepTime := c.rateLimit - elapsed
+		time.Sleep(sleepTime)
+	}
+	c.lastRequest = time.Now()
+	c.mu.Unlock()
+
 	var reqBody io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -59,6 +125,21 @@ func (c *Client) doRequest(method, endpoint string, body interface{}) ([]byte, i
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Handle rate limiting (429) with exponential backoff
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if retryCount >= maxRetries {
+			return nil, resp.StatusCode, fmt.Errorf("rate limit exceeded after %d retries", maxRetries)
+		}
+		
+		// Exponential backoff: 2s, 4s, 8s
+		retryAfter := time.Duration(1<<uint(retryCount+1)) * time.Second
+		logger.Warn("Rate limit hit (429), waiting %v before retry %d/%d", retryAfter, retryCount+1, maxRetries)
+		time.Sleep(retryAfter)
+		
+		// Retry
+		return c.doRequestWithRetry(method, endpoint, body, retryCount+1)
 	}
 
 	return respBody, resp.StatusCode, nil
@@ -94,17 +175,30 @@ func (c *Client) CreateUser(username string, req *CreateUserRequest) (*UserRespo
 	userID := fmt.Sprintf("@%s:%s", username, c.homeserver)
 	endpoint := fmt.Sprintf("/_synapse/admin/v2/users/%s", url.PathEscape(userID))
 
+	logger.Info("Creating user: %s (endpoint: %s)", username, endpoint)
+
 	body, statusCode, err := c.doRequest("PUT", endpoint, req)
 	if err != nil {
+		logger.Error("HTTP request failed for user '%s': %v", username, err)
 		return nil, err
 	}
 
+	logger.Info("CreateUser response for '%s': status=%d", username, statusCode)
+
 	var resp UserResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
+		logger.Error("Failed to parse response for user '%s': %v (body: %s)", username, err, string(body))
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
+		// Check if user already exists (some Matrix servers return different codes)
+		if resp.Errcode == "M_USER_IN_USE" || strings.Contains(resp.Error, "already exists") {
+			logger.Info("User '%s' already exists (status=%d), treating as success", username, statusCode)
+			resp.UserID = userID
+			return &resp, nil
+		}
+		logger.Error("API error for user '%s': status=%d, errcode=%s, error=%s", username, statusCode, resp.Errcode, resp.Error)
 		return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
 	}
 
@@ -140,11 +234,15 @@ func (c *Client) GetUser(userID string) (*UserResponse, error) {
 // UserExists checks if a user exists
 func (c *Client) UserExists(username string) (bool, error) {
 	userID := fmt.Sprintf("@%s:%s", username, c.homeserver)
+	logger.Info("Checking if user exists: %s", userID)
 	user, err := c.GetUser(userID)
 	if err != nil {
+		logger.Error("UserExists check failed for '%s': %v", username, err)
 		return false, err
 	}
-	return user != nil, nil
+	exists := user != nil
+	logger.Info("User '%s' exists: %v", username, exists)
+	return exists, nil
 }
 
 // CreateRoom creates a new room
@@ -312,11 +410,3 @@ func (c *Client) SetRoomParent(roomID, spaceID string, canonical bool) error {
 func (c *Client) FormatUserID(username string) string {
 	return fmt.Sprintf("@%s:%s", username, c.homeserver)
 }
-
-// GetHomeserver returns the homeserver domain
-func (c *Client) GetHomeserver() string {
-	return c.homeserver
-}
-
-
-

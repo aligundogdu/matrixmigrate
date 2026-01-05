@@ -1,4 +1,4 @@
-package archive
+﻿package archive
 
 import (
 	"compress/gzip"
@@ -144,6 +144,5 @@ func GetUncompressedSize(filePath string) (int64, error) {
 
 	return int64(len(data)), nil
 }
-
 
 

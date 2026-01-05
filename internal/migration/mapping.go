@@ -1,4 +1,4 @@
-package migration
+﻿package migration
 
 import (
 	"encoding/json"
@@ -171,6 +171,5 @@ func GenerateMappingFilename(dir string) string {
 	timestamp := time.Now().Format("20060102-150405")
 	return filepath.Join(dir, fmt.Sprintf("asset-mapping-%s.json", timestamp))
 }
-
 
 

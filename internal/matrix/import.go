@@ -1,9 +1,10 @@
-package matrix
+﻿package matrix
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/aligundogdu/matrixmigrate/internal/logger"
 	"github.com/aligundogdu/matrixmigrate/internal/mattermost"
 )
 
@@ -32,43 +33,60 @@ func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[stri
 	stats := &ImportStats{}
 	total := len(users)
 
+	logger.Info("Starting user import: %d users to process", total)
+
 	// Copy existing mappings
 	for k, v := range existingMapping {
 		mapping[k] = v
 	}
+	logger.Info("Existing mappings copied: %d entries", len(existingMapping))
 
 	for idx, user := range users {
+		logger.Info("Processing user %d/%d: %s (ID: %s)", idx+1, total, user.Username, user.ID)
+		
 		if progress != nil {
 			progress("users", idx+1, total, user.Username)
 		}
 
 		// Skip deleted users
 		if user.IsDeleted() {
+			logger.Info("User '%s' is deleted, skipping", user.Username)
 			stats.UsersSkipped++
 			continue
 		}
 
 		// Skip if already in mapping
 		if _, exists := existingMapping[user.ID]; exists {
+			logger.Info("User '%s' already in mapping, skipping", user.Username)
 			stats.UsersSkipped++
 			continue
 		}
 
-		// Check if user already exists in Matrix
-		exists, err := i.client.UserExists(user.Username)
+		// Try to check if user exists, but don't fail if check fails
+		// (some Matrix servers only allow checking local users)
+		exists := false
+		existsCheck, err := i.client.UserExists(user.Username)
 		if err != nil {
-			stats.UsersFailed++
-			continue
+			// If check fails with "Can only look up local users", ignore it
+			// CreateUser is idempotent anyway, so we can just try to create
+			if strings.Contains(err.Error(), "Can only look up local users") {
+				logger.Info("UserExists check not available for '%s', will try to create", user.Username)
+			} else {
+				logger.Warn("UserExists check failed for '%s': %v, will try to create anyway", user.Username, err)
+			}
+		} else {
+			exists = existsCheck
 		}
 
 		if exists {
 			// User already exists, just add to mapping
 			mapping[user.ID] = i.client.FormatUserID(user.Username)
+			logger.Info("User '%s' already exists, skipped", user.Username)
 			stats.UsersSkipped++
 			continue
 		}
 
-		// Create the user
+		// Create the user (CreateUser is idempotent - if user exists, it will update)
 		displayName := strings.TrimSpace(user.FirstName + " " + user.LastName)
 		if displayName == "" {
 			displayName = user.Username
@@ -83,9 +101,19 @@ func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[stri
 
 		resp, err := i.client.CreateUser(user.Username, req)
 		if err != nil {
+			// Check if error is because user already exists
+			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "M_USER_IN_USE") {
+				// User exists, add to mapping
+				mapping[user.ID] = i.client.FormatUserID(user.Username)
+				logger.Info("User '%s' already exists (detected during create), skipped", user.Username)
+				stats.UsersSkipped++
+				continue
+			}
+			logger.Error("Failed to create user '%s': %v", user.Username, err)
 			stats.UsersFailed++
 			continue
 		}
+		logger.Success("Created user '%s' -> %s", user.Username, resp.UserID)
 
 		mapping[user.ID] = resp.UserID
 		stats.UsersCreated++
@@ -118,6 +146,7 @@ func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, existingMapping 
 
 		// Skip if already imported (exists in mapping)
 		if _, exists := existingMapping[team.ID]; exists {
+			logger.Info("Space '%s' already imported, skipped", team.DisplayName)
 			stats.SpacesSkipped++
 			continue
 		}
@@ -125,10 +154,12 @@ func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, existingMapping 
 		// Create space
 		resp, err := i.client.CreateSpace(team.DisplayName, team.Description, team.IsOpen())
 		if err != nil {
+			logger.Error("Failed to create space '%s': %v", team.DisplayName, err)
 			stats.SpacesFailed++
 			continue
 		}
 
+		logger.Success("Created space '%s' -> %s", team.DisplayName, resp.RoomID)
 		mapping[team.ID] = resp.RoomID
 		stats.SpacesCreated++
 	}
@@ -166,6 +197,7 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existing
 
 		// Skip if already imported (exists in mapping)
 		if _, exists := existingMapping[channel.ID]; exists {
+			logger.Info("Room '%s' already imported, skipped", channel.DisplayName)
 			stats.RoomsSkipped++
 			continue
 		}
@@ -178,10 +210,12 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existing
 
 		resp, err := i.client.CreateRegularRoom(channel.DisplayName, topic, channel.IsPublic())
 		if err != nil {
+			logger.Error("Failed to create room '%s': %v", channel.DisplayName, err)
 			stats.RoomsFailed++
 			continue
 		}
 
+		logger.Success("Created room '%s' -> %s", channel.DisplayName, resp.RoomID)
 		mapping[channel.ID] = resp.RoomID
 		stats.RoomsCreated++
 	}
@@ -215,12 +249,19 @@ func (i *Importer) ApplyTeamMemberships(
 		spaceID, spaceExists := spaceMapping[membership.TeamID]
 
 		if !userExists || !spaceExists {
+			if !userExists {
+				logger.Warn("Team membership skipped: user %s not in mapping", membership.UserID)
+			}
+			if !spaceExists {
+				logger.Warn("Team membership skipped: team %s not in mapping", membership.TeamID)
+			}
 			stats.MembersSkipped++
 			continue
 		}
 
 		// Invite user to space
 		if err := i.client.InviteUser(spaceID, userID); err != nil {
+			logger.Error("Failed to invite %s to space %s: %v", userID, spaceID, err)
 			stats.MembersFailed++
 			continue
 		}
@@ -251,12 +292,19 @@ func (i *Importer) ApplyChannelMemberships(
 		roomID, roomExists := roomMapping[membership.ChannelID]
 
 		if !userExists || !roomExists {
+			if !userExists {
+				logger.Warn("Channel membership skipped: user %s not in mapping", membership.UserID)
+			}
+			if !roomExists {
+				logger.Warn("Channel membership skipped: channel %s not in mapping", membership.ChannelID)
+			}
 			stats.MembersSkipped++
 			continue
 		}
 
 		// Invite user to room
 		if err := i.client.InviteUser(roomID, userID); err != nil {
+			logger.Error("Failed to invite %s to room %s: %v", userID, roomID, err)
 			stats.MembersFailed++
 			continue
 		}
@@ -297,6 +345,7 @@ func (i *Importer) LinkRoomsToSpaces(
 
 		// Add room as child of space
 		if err := i.client.AddRoomToSpace(spaceID, roomID, true); err != nil {
+			logger.Error("Failed to link room '%s' to space: %v", channel.DisplayName, err)
 			stats.RoomsLinkFailed++
 			continue
 		}
@@ -304,8 +353,10 @@ func (i *Importer) LinkRoomsToSpaces(
 		// Set space as parent of room
 		if err := i.client.SetRoomParent(roomID, spaceID, true); err != nil {
 			// Non-critical error, room is still linked as child
+			logger.Warn("Failed to set parent for room '%s': %v", channel.DisplayName, err)
 		}
 
+		logger.Success("Linked room '%s' to space", channel.DisplayName)
 		stats.RoomsLinked++
 	}
 
@@ -334,6 +385,10 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *Exi
 		Stats: &ImportStats{},
 	}
 
+	logger.Info("=== ImportAssets Started ===")
+	logger.Info("Assets to import: %d users, %d teams, %d channels", 
+		len(assets.Users), len(assets.Teams), len(assets.Channels))
+
 	// Initialize empty mappings if not provided
 	if existingMappings == nil {
 		existingMappings = &ExistingMappings{
@@ -341,17 +396,25 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *Exi
 			Spaces: make(map[string]string),
 			Rooms:  make(map[string]string),
 		}
+		logger.Info("No existing mappings provided, starting fresh")
+	} else {
+		logger.Info("Existing mappings: %d users, %d spaces, %d rooms",
+			len(existingMappings.Users), len(existingMappings.Spaces), len(existingMappings.Rooms))
 	}
 
 	// Import users
+	logger.Info("=== Starting User Import ===")
 	userMapping, userStats, err := i.ImportUsers(assets.Users, existingMappings.Users, progress)
 	if err != nil {
+		logger.Error("User import failed: %v", err)
 		return nil, fmt.Errorf("failed to import users: %w", err)
 	}
 	result.UserMapping = userMapping
 	result.Stats.UsersCreated = userStats.UsersCreated
 	result.Stats.UsersSkipped = userStats.UsersSkipped
 	result.Stats.UsersFailed = userStats.UsersFailed
+	logger.Info("User import completed: created=%d, skipped=%d, failed=%d",
+		userStats.UsersCreated, userStats.UsersSkipped, userStats.UsersFailed)
 
 	// Import teams as spaces
 	spaceMapping, spaceStats, err := i.ImportTeamsAsSpaces(assets.Teams, existingMappings.Spaces, progress)

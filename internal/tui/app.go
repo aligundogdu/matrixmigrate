@@ -1,4 +1,4 @@
-package tui
+﻿package tui
 
 import (
 	"fmt"
@@ -60,6 +60,9 @@ type Model struct {
 
 	// Operation result for detailed stats
 	operationResult *migration.OperationResult
+
+	// Program reference for sending messages from goroutines
+	program *tea.Program
 
 	// Quitting
 	quitting bool
@@ -755,21 +758,18 @@ type operationCompleteMsg struct {
 // Run commands for various operations
 func (m *Model) runExportAssets() tea.Cmd {
 	return func() tea.Msg {
-		m.view = ViewProgress
-		m.progressStage = "Connecting to Mattermost..."
+		sendProgress("Connecting to Mattermost...", 0, 0, "")
 
 		// Connect to Mattermost
 		if err := m.orchestrator.ConnectMattermost(); err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		// Run export
+		sendProgress("Exporting assets...", 0, 0, "")
+
+		// Run export with live progress updates
 		progress := func(stage string, current, total int, item string) {
-			// Note: In a real implementation, we'd use program.Send()
-			m.progressStage = stage
-			m.progressCurrent = current
-			m.progressTotal = total
-			m.progressItem = item
+			sendProgress(stage, current, total, item)
 		}
 
 		result, err := m.orchestrator.ExportAssets(progress)
@@ -783,20 +783,18 @@ func (m *Model) runExportAssets() tea.Cmd {
 
 func (m *Model) runImportAssets() tea.Cmd {
 	return func() tea.Msg {
-		m.view = ViewProgress
-		m.progressStage = "Connecting to Matrix..."
+		sendProgress("Connecting to Matrix...", 0, 0, "")
 
 		// Connect to Matrix
 		if err := m.orchestrator.ConnectMatrix(); err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		// Run import
+		sendProgress("Importing assets...", 0, 0, "")
+
+		// Run import with live progress updates
 		progress := func(stage string, current, total int, item string) {
-			m.progressStage = stage
-			m.progressCurrent = current
-			m.progressTotal = total
-			m.progressItem = item
+			sendProgress(stage, current, total, item)
 		}
 
 		result, err := m.orchestrator.ImportAssets(progress)
@@ -810,19 +808,17 @@ func (m *Model) runImportAssets() tea.Cmd {
 
 func (m *Model) runExportMemberships() tea.Cmd {
 	return func() tea.Msg {
-		m.view = ViewProgress
-		m.progressStage = "Connecting to Mattermost..."
+		sendProgress("Connecting to Mattermost...", 0, 0, "")
 
 		// Connect if not already
 		if err := m.orchestrator.ConnectMattermost(); err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
+		sendProgress("Exporting memberships...", 0, 0, "")
+
 		progress := func(stage string, current, total int, item string) {
-			m.progressStage = stage
-			m.progressCurrent = current
-			m.progressTotal = total
-			m.progressItem = item
+			sendProgress(stage, current, total, item)
 		}
 
 		result, err := m.orchestrator.ExportMemberships(progress)
@@ -836,19 +832,17 @@ func (m *Model) runExportMemberships() tea.Cmd {
 
 func (m *Model) runImportMemberships() tea.Cmd {
 	return func() tea.Msg {
-		m.view = ViewProgress
-		m.progressStage = "Connecting to Matrix..."
+		sendProgress("Connecting to Matrix...", 0, 0, "")
 
 		// Connect if not already
 		if err := m.orchestrator.ConnectMatrix(); err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
+		sendProgress("Importing memberships...", 0, 0, "")
+
 		progress := func(stage string, current, total int, item string) {
-			m.progressStage = stage
-			m.progressCurrent = current
-			m.progressTotal = total
-			m.progressItem = item
+			sendProgress(stage, current, total, item)
 		}
 
 		result, err := m.orchestrator.ImportMemberships(progress)
@@ -872,6 +866,9 @@ func (m *Model) runTestConnection() tea.Cmd {
 	}
 }
 
+// programInstance holds the running program for sending messages from goroutines
+var programInstance *tea.Program
+
 // Run starts the TUI application
 func Run(cfg *config.Config) error {
 	model, err := NewModel(cfg)
@@ -879,8 +876,20 @@ func Run(cfg *config.Config) error {
 		return err
 	}
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
-	_, err = p.Run()
+	programInstance = tea.NewProgram(model, tea.WithAltScreen())
+	_, err = programInstance.Run()
 	return err
+}
+
+// sendProgress sends a progress message to the TUI from a goroutine
+func sendProgress(stage string, current, total int, item string) {
+	if programInstance != nil {
+		programInstance.Send(progressMsg{
+			stage:   stage,
+			current: current,
+			total:   total,
+			item:    item,
+		})
+	}
 }
 

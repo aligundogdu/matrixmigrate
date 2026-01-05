@@ -1,4 +1,4 @@
-package mattermost
+﻿package mattermost
 
 import (
 	"fmt"
@@ -169,6 +169,5 @@ func FilterActiveMemberships(memberships *Memberships) *Memberships {
 
 	return filtered
 }
-
 
 

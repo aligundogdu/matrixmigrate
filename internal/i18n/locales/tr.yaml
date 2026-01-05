@@ -1,4 +1,4 @@
-app:
+﻿app:
   name: "MatrixMigrate"
   description: "Mattermost'tan Matrix'e Taşıma Aracı"
   version: "Sürüm: %s"

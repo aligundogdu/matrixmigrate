@@ -1,4 +1,4 @@
-package matrix
+﻿package matrix
 
 // User represents a Matrix user
 type User struct {
@@ -167,6 +167,5 @@ const (
 	EventTypeRoomName    = "m.room.name"
 	EventTypeRoomTopic   = "m.room.topic"
 )
-
 
 

@@ -1,10 +1,11 @@
-package migration
+﻿package migration
 
 import (
 	"fmt"
 	"time"
 
 	"github.com/aligundogdu/matrixmigrate/internal/config"
+	"github.com/aligundogdu/matrixmigrate/internal/logger"
 	"github.com/aligundogdu/matrixmigrate/internal/mattermost"
 	"github.com/aligundogdu/matrixmigrate/internal/matrix"
 	"github.com/aligundogdu/matrixmigrate/internal/ssh"
@@ -24,6 +25,11 @@ type Orchestrator struct {
 
 // NewOrchestrator creates a new migration orchestrator
 func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
+	// Initialize logger
+	if err := logger.Init(cfg.Data.AssetsDir); err != nil {
+		// Non-fatal, continue without logging
+	}
+
 	// Load or create state
 	state, err := LoadState(cfg.Data.StateFile)
 	if err != nil {
@@ -39,6 +45,7 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 
 // Close closes all connections
 func (o *Orchestrator) Close() error {
+	logger.Close()
 	if o.mmClient != nil {
 		o.mmClient.Close()
 	}
@@ -223,6 +230,16 @@ func (o *Orchestrator) ConnectMatrix() error {
 	if err := client.TestConnection(); err != nil {
 		o.tunnelManager.CloseTunnel("matrix")
 		return fmt.Errorf("failed to connect to Matrix API: %w", err)
+	}
+
+	// Auto-detect homeserver from authenticated user
+	detectedHomeserver, err := client.DetectHomeserver()
+	if err != nil {
+		logger.Warn("Could not auto-detect homeserver: %v, using configured value: %s", err, cfg.Homeserver)
+	} else if detectedHomeserver != cfg.Homeserver {
+		logger.Info("Auto-detected homeserver '%s' differs from configured '%s', using detected value", 
+			detectedHomeserver, cfg.Homeserver)
+		client.SetHomeserver(detectedHomeserver)
 	}
 
 	o.mxClient = client

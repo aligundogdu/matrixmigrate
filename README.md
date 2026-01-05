@@ -1,4 +1,4 @@
-# MatrixMigrate
+﻿# MatrixMigrate
 
 A CLI tool for migrating from Mattermost to Matrix Synapse with multi-step, resumable migration support.
 

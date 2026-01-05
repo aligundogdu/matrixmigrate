@@ -1,4 +1,4 @@
-package mattermost
+﻿package mattermost
 
 import "time"
 
@@ -193,6 +193,5 @@ func (a *Assets) CalculateStats() ExportStats {
 
 	return stats
 }
-
 
 

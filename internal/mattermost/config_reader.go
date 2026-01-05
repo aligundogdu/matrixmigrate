@@ -1,4 +1,4 @@
-package mattermost
+﻿package mattermost
 
 import (
 	"encoding/json"

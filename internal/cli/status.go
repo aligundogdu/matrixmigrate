@@ -1,4 +1,4 @@
-package cli
+﻿package cli
 
 import (
 	"fmt"
@@ -121,6 +121,5 @@ func getStatusText(status string, locale *i18n.Locale) string {
 		return status
 	}
 }
-
 
 

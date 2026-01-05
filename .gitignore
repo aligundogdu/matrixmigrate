@@ -1,4 +1,4 @@
-# Binaries
+﻿# Binaries
 matrixmigrate
 *.exe
 *.exe~
@@ -36,6 +36,5 @@ Thumbs.db
 
 # Logs
 *.log
-
 
 

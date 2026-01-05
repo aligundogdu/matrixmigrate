@@ -1,4 +1,4 @@
-package mattermost
+﻿package mattermost
 
 import (
 	"database/sql"
@@ -269,6 +269,5 @@ func (c *Client) GetChannelCount() (int, error) {
 	err := c.db.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('O', 'P')").Scan(&count)
 	return count, err
 }
-
 
 

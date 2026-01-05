@@ -1,4 +1,4 @@
-package migration
+﻿package migration
 
 import (
 	"encoding/json"
@@ -247,6 +247,5 @@ func StateExists(filePath string) bool {
 	_, err := os.Stat(filePath)
 	return err == nil
 }
-
 
 

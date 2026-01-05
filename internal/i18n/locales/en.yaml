@@ -1,4 +1,4 @@
-app:
+﻿app:
   name: "MatrixMigrate"
   description: "Mattermost to Matrix Migration Tool"
   version: "Version: %s"
