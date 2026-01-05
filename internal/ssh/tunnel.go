@@ -293,9 +293,9 @@ func (tm *TunnelManager) CreateTunnel(name string, cfg TunnelConfig) (*Tunnel, e
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// Check if tunnel already exists
-	if _, exists := tm.tunnels[name]; exists {
-		return nil, fmt.Errorf("tunnel %s already exists", name)
+	// If tunnel already exists, return it (reuse existing connection)
+	if existing, exists := tm.tunnels[name]; exists {
+		return existing, nil
 	}
 
 	tunnel, err := NewTunnel(cfg)

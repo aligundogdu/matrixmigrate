@@ -172,3 +172,5 @@ func GenerateMappingFilename(dir string) string {
 	return filepath.Join(dir, fmt.Sprintf("asset-mapping-%s.json", timestamp))
 }
 
+
+

@@ -27,10 +27,15 @@ func GenerateRandomPassword() string {
 }
 
 // ImportUsers imports users from Mattermost to Matrix
-func (i *Importer) ImportUsers(users []mattermost.User, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
+func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
 	mapping := make(map[string]string)
 	stats := &ImportStats{}
 	total := len(users)
+
+	// Copy existing mappings
+	for k, v := range existingMapping {
+		mapping[k] = v
+	}
 
 	for idx, user := range users {
 		if progress != nil {
@@ -43,7 +48,13 @@ func (i *Importer) ImportUsers(users []mattermost.User, progress ImportProgressC
 			continue
 		}
 
-		// Check if user already exists
+		// Skip if already in mapping
+		if _, exists := existingMapping[user.ID]; exists {
+			stats.UsersSkipped++
+			continue
+		}
+
+		// Check if user already exists in Matrix
 		exists, err := i.client.UserExists(user.Username)
 		if err != nil {
 			stats.UsersFailed++
@@ -84,10 +95,15 @@ func (i *Importer) ImportUsers(users []mattermost.User, progress ImportProgressC
 }
 
 // ImportTeamsAsSpaces imports teams from Mattermost as Matrix spaces
-func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
+func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
 	mapping := make(map[string]string)
 	stats := &ImportStats{}
 	total := len(teams)
+
+	// Copy existing mappings
+	for k, v := range existingMapping {
+		mapping[k] = v
+	}
 
 	for idx, team := range teams {
 		if progress != nil {
@@ -96,6 +112,12 @@ func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, progress ImportP
 
 		// Skip deleted teams
 		if team.IsDeleted() {
+			stats.SpacesSkipped++
+			continue
+		}
+
+		// Skip if already imported (exists in mapping)
+		if _, exists := existingMapping[team.ID]; exists {
 			stats.SpacesSkipped++
 			continue
 		}
@@ -115,10 +137,15 @@ func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, progress ImportP
 }
 
 // ImportChannelsAsRooms imports channels from Mattermost as Matrix rooms
-func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
+func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
 	mapping := make(map[string]string)
 	stats := &ImportStats{}
 	total := len(channels)
+
+	// Copy existing mappings
+	for k, v := range existingMapping {
+		mapping[k] = v
+	}
 
 	for idx, channel := range channels {
 		if progress != nil {
@@ -133,6 +160,12 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, progress
 
 		// Skip direct messages and group messages
 		if channel.IsDirect() || channel.IsGroup() {
+			stats.RoomsSkipped++
+			continue
+		}
+
+		// Skip if already imported (exists in mapping)
+		if _, exists := existingMapping[channel.ID]; exists {
 			stats.RoomsSkipped++
 			continue
 		}
@@ -287,14 +320,31 @@ type ImportAssetsResult struct {
 	Stats        *ImportStats
 }
 
+// ExistingMappings holds existing mappings to skip already imported items
+type ExistingMappings struct {
+	Users    map[string]string
+	Spaces   map[string]string
+	Rooms    map[string]string
+}
+
 // ImportAssets imports all assets (users, teams as spaces, channels as rooms)
-func (i *Importer) ImportAssets(assets *mattermost.Assets, progress ImportProgressCallback) (*ImportAssetsResult, error) {
+// If existingMappings is provided, already imported items will be skipped
+func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *ExistingMappings, progress ImportProgressCallback) (*ImportAssetsResult, error) {
 	result := &ImportAssetsResult{
 		Stats: &ImportStats{},
 	}
 
+	// Initialize empty mappings if not provided
+	if existingMappings == nil {
+		existingMappings = &ExistingMappings{
+			Users:  make(map[string]string),
+			Spaces: make(map[string]string),
+			Rooms:  make(map[string]string),
+		}
+	}
+
 	// Import users
-	userMapping, userStats, err := i.ImportUsers(assets.Users, progress)
+	userMapping, userStats, err := i.ImportUsers(assets.Users, existingMappings.Users, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import users: %w", err)
 	}
@@ -304,7 +354,7 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, progress ImportProgre
 	result.Stats.UsersFailed = userStats.UsersFailed
 
 	// Import teams as spaces
-	spaceMapping, spaceStats, err := i.ImportTeamsAsSpaces(assets.Teams, progress)
+	spaceMapping, spaceStats, err := i.ImportTeamsAsSpaces(assets.Teams, existingMappings.Spaces, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import teams: %w", err)
 	}
@@ -314,7 +364,7 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, progress ImportProgre
 	result.Stats.SpacesFailed = spaceStats.SpacesFailed
 
 	// Import channels as rooms
-	roomMapping, roomStats, err := i.ImportChannelsAsRooms(assets.Channels, progress)
+	roomMapping, roomStats, err := i.ImportChannelsAsRooms(assets.Channels, existingMappings.Rooms, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import channels: %w", err)
 	}

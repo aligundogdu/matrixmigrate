@@ -58,6 +58,9 @@ type Model struct {
 	errorMessage   string
 	successMessage string
 
+	// Operation result for detailed stats
+	operationResult *migration.OperationResult
+
 	// Quitting
 	quitting bool
 }
@@ -190,6 +193,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = ViewError
 		} else {
 			m.successMessage = msg.message
+			m.operationResult = msg.result
 			m.view = ViewSuccess
 		}
 		// Refresh menu items
@@ -502,15 +506,121 @@ func (m Model) renderError() string {
 		lipgloss.JoinVertical(lipgloss.Center, content, help))
 }
 
-// renderSuccess renders the success view
+// renderSuccess renders the success view with detailed stats
 func (m Model) renderSuccess() string {
-	content := SuccessBoxStyle.Render(
-		lipgloss.JoinVertical(
-			lipgloss.Left,
-			SuccessStyle.Render(IconCheck+" Success"),
-			"",
-			m.successMessage,
-		),
+	var sections []string
+
+	// Title
+	sections = append(sections, SuccessStyle.Render(IconCheck+" Success"))
+	sections = append(sections, "")
+	sections = append(sections, m.successMessage)
+
+	// Show detailed stats if available
+	if m.operationResult != nil {
+		sections = append(sections, "")
+		sections = append(sections, SubtitleStyle.Render("─────────────────────────"))
+		sections = append(sections, "")
+
+		r := m.operationResult
+
+		// Export stats
+		if r.UsersExported > 0 || r.TeamsExported > 0 || r.ChannelsExported > 0 {
+			sections = append(sections, SubtitleStyle.Render("📤 Exported:"))
+			if r.UsersExported > 0 {
+				sections = append(sections, fmt.Sprintf("   • Users: %d", r.UsersExported))
+			}
+			if r.TeamsExported > 0 {
+				sections = append(sections, fmt.Sprintf("   • Teams: %d", r.TeamsExported))
+			}
+			if r.ChannelsExported > 0 {
+				sections = append(sections, fmt.Sprintf("   • Channels: %d", r.ChannelsExported))
+			}
+			sections = append(sections, "")
+		}
+
+		// Membership export stats
+		if r.TeamMembershipsExported > 0 || r.ChannelMembershipsExported > 0 {
+			sections = append(sections, SubtitleStyle.Render("📤 Memberships Exported:"))
+			if r.TeamMembershipsExported > 0 {
+				sections = append(sections, fmt.Sprintf("   • Team memberships: %d", r.TeamMembershipsExported))
+			}
+			if r.ChannelMembershipsExported > 0 {
+				sections = append(sections, fmt.Sprintf("   • Channel memberships: %d", r.ChannelMembershipsExported))
+			}
+			sections = append(sections, "")
+		}
+
+		// Import stats - Users
+		if r.UsersCreated > 0 || r.UsersSkipped > 0 || r.UsersFailed > 0 {
+			sections = append(sections, SubtitleStyle.Render("👥 Users:"))
+			if r.UsersCreated > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Created: %d", r.UsersCreated)))
+			}
+			if r.UsersSkipped > 0 {
+				sections = append(sections, DimStyle.Render(fmt.Sprintf("   ⊘ Skipped: %d", r.UsersSkipped)))
+			}
+			if r.UsersFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.UsersFailed)))
+			}
+			sections = append(sections, "")
+		}
+
+		// Import stats - Spaces
+		if r.SpacesCreated > 0 || r.SpacesSkipped > 0 || r.SpacesFailed > 0 {
+			sections = append(sections, SubtitleStyle.Render("🏠 Spaces:"))
+			if r.SpacesCreated > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Created: %d", r.SpacesCreated)))
+			}
+			if r.SpacesSkipped > 0 {
+				sections = append(sections, DimStyle.Render(fmt.Sprintf("   ⊘ Skipped: %d", r.SpacesSkipped)))
+			}
+			if r.SpacesFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.SpacesFailed)))
+			}
+			sections = append(sections, "")
+		}
+
+		// Import stats - Rooms
+		if r.RoomsCreated > 0 || r.RoomsSkipped > 0 || r.RoomsFailed > 0 || r.RoomsLinked > 0 {
+			sections = append(sections, SubtitleStyle.Render("💬 Rooms:"))
+			if r.RoomsCreated > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Created: %d", r.RoomsCreated)))
+			}
+			if r.RoomsLinked > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Linked to spaces: %d", r.RoomsLinked)))
+			}
+			if r.RoomsSkipped > 0 {
+				sections = append(sections, DimStyle.Render(fmt.Sprintf("   ⊘ Skipped: %d", r.RoomsSkipped)))
+			}
+			if r.RoomsFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.RoomsFailed)))
+			}
+			sections = append(sections, "")
+		}
+
+		// Membership import stats
+		if r.MembersAdded > 0 || r.MembersSkipped > 0 || r.MembersFailed > 0 {
+			sections = append(sections, SubtitleStyle.Render("👤 Memberships:"))
+			if r.MembersAdded > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Added: %d", r.MembersAdded)))
+			}
+			if r.MembersSkipped > 0 {
+				sections = append(sections, DimStyle.Render(fmt.Sprintf("   ⊘ Skipped: %d", r.MembersSkipped)))
+			}
+			if r.MembersFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.MembersFailed)))
+			}
+			sections = append(sections, "")
+		}
+
+		// Output file
+		if r.OutputFile != "" {
+			sections = append(sections, DimStyle.Render("📁 Output: "+r.OutputFile))
+		}
+	}
+
+	content := SuccessBoxStyle.Width(50).Render(
+		lipgloss.JoinVertical(lipgloss.Left, sections...),
 	)
 
 	help := HelpStyle.Render("Press enter to continue")
@@ -639,6 +749,7 @@ type progressMsg struct {
 type operationCompleteMsg struct {
 	message string
 	err     error
+	result  *migration.OperationResult
 }
 
 // Run commands for various operations
@@ -661,11 +772,12 @@ func (m *Model) runExportAssets() tea.Cmd {
 			m.progressItem = item
 		}
 
-		if err := m.orchestrator.ExportAssets(progress); err != nil {
+		result, err := m.orchestrator.ExportAssets(progress)
+		if err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		return operationCompleteMsg{message: "Assets exported successfully!"}
+		return operationCompleteMsg{message: "Assets exported successfully!", result: result}
 	}
 }
 
@@ -687,11 +799,12 @@ func (m *Model) runImportAssets() tea.Cmd {
 			m.progressItem = item
 		}
 
-		if err := m.orchestrator.ImportAssets(progress); err != nil {
+		result, err := m.orchestrator.ImportAssets(progress)
+		if err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		return operationCompleteMsg{message: "Assets imported successfully!"}
+		return operationCompleteMsg{message: "Assets imported successfully!", result: result}
 	}
 }
 
@@ -712,11 +825,12 @@ func (m *Model) runExportMemberships() tea.Cmd {
 			m.progressItem = item
 		}
 
-		if err := m.orchestrator.ExportMemberships(progress); err != nil {
+		result, err := m.orchestrator.ExportMemberships(progress)
+		if err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		return operationCompleteMsg{message: "Memberships exported successfully!"}
+		return operationCompleteMsg{message: "Memberships exported successfully!", result: result}
 	}
 }
 
@@ -737,11 +851,12 @@ func (m *Model) runImportMemberships() tea.Cmd {
 			m.progressItem = item
 		}
 
-		if err := m.orchestrator.ImportMemberships(progress); err != nil {
+		result, err := m.orchestrator.ImportMemberships(progress)
+		if err != nil {
 			return operationCompleteMsg{err: err}
 		}
 
-		return operationCompleteMsg{message: "Memberships imported successfully!"}
+		return operationCompleteMsg{message: "Memberships imported successfully!", result: result}
 	}
 }
 

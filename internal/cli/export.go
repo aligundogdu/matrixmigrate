@@ -70,15 +70,14 @@ func runExportAssets(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := orch.ExportAssets(progress); err != nil {
+	result, err := orch.ExportAssets(progress)
+	if err != nil {
 		return err
 	}
 
-	// Get the output file path from state
-	state := orch.GetState()
-	step := state.GetStep(migration.StepExportAssets)
-	
-	printSuccess(i18n.T("messages.file_saved", step.OutputFile))
+	printSuccess(i18n.T("messages.file_saved", result.OutputFile))
+	printInfo(fmt.Sprintf("  Users: %d, Teams: %d, Channels: %d", 
+		result.UsersExported, result.TeamsExported, result.ChannelsExported))
 	printSuccess(i18n.T("messages.step_completed", "export_assets"))
 
 	return nil
@@ -123,16 +122,17 @@ func runExportMemberships(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := orch.ExportMemberships(progress); err != nil {
+	result, err := orch.ExportMemberships(progress)
+	if err != nil {
 		return err
 	}
 
-	// Get the output file path from state
-	step := state.GetStep(migration.StepExportMemberships)
-	
-	printSuccess(i18n.T("messages.file_saved", step.OutputFile))
+	printSuccess(i18n.T("messages.file_saved", result.OutputFile))
+	printInfo(fmt.Sprintf("  Team memberships: %d, Channel memberships: %d", 
+		result.TeamMembershipsExported, result.ChannelMembershipsExported))
 	printSuccess(i18n.T("messages.step_completed", "export_memberships"))
 
 	return nil
 }
+
 

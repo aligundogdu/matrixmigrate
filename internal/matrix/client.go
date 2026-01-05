@@ -318,3 +318,5 @@ func (c *Client) GetHomeserver() string {
 	return c.homeserver
 }
 
+
+
