@@ -1,0 +1,39 @@
+# Binaries
+matrixmigrate
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Config with secrets
+config.yaml
+
+# Data files (may contain sensitive info)
+data/assets/*.json.gz
+data/mappings/*.json
+data/state.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+

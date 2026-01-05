@@ -1,0 +1,135 @@
+# MatrixMigrate Configuration Example
+# Copy this file to config.yaml and update with your settings
+
+# Language setting (default: en)
+# Supported: en, tr
+language: en
+
+# Mattermost server configuration
+mattermost:
+  ssh:
+    host: "mattermost.example.com"
+    port: 22
+    user: "root"
+    
+    # Authentication: Use ONE of the following options:
+    
+    # Option 1: SSH Key (recommended)
+    key_path: "~/.ssh/id_rsa"
+    # passphrase_env: "SSH_KEY_PASSPHRASE"  # Optional: if key is encrypted
+    
+    # Option 2: Password authentication
+    # password_env: "MM_SSH_PASSWORD"  # Env var containing SSH password
+  
+  # Path to Mattermost config.json on remote server
+  # Database credentials will be read from this file automatically!
+  config_path: "/opt/mattermost/config/config.json"
+  
+  # Optional: Manual database override (if you don't want auto-detection)
+  # database:
+  #   host: "localhost"
+  #   port: 5432
+  #   name: "mattermost"
+  #   user: "mmuser"
+  #   password_env: "MM_DB_PASSWORD"
+
+# Matrix Synapse server configuration
+matrix:
+  ssh:
+    host: "matrix.example.com"
+    port: 22
+    user: "root"
+    
+    # Authentication: Use ONE of the following options:
+    
+    # Option 1: SSH Key (recommended)
+    key_path: "~/.ssh/id_rsa"
+    # passphrase_env: "SSH_KEY_PASSPHRASE"  # Optional: if key is encrypted
+    
+    # Option 2: Password authentication
+    # password_env: "MX_SSH_PASSWORD"  # Env var containing SSH password
+  
+  api:
+    # After SSH tunnel, API will be available at localhost
+    base_url: "http://localhost:8008"
+    # Optional: Use existing admin token instead of login
+    # admin_token_env: "MATRIX_ADMIN_TOKEN"
+  
+  # Login with admin username/password (recommended)
+  # The tool will automatically get an access token
+  auth:
+    username: "admin"
+    password_env: "MATRIX_ADMIN_PASSWORD"
+  
+  # Your Matrix homeserver domain (e.g., for @user:example.com)
+  homeserver: "example.com"
+
+# Data storage paths
+data:
+  assets_dir: "./data/assets"
+  mappings_dir: "./data/mappings"
+  state_file: "./data/state.json"
+
+
+# ========================================
+# EXAMPLE CONFIGURATIONS
+# ========================================
+
+# Example 1: Both servers with SSH key
+# ------------------------------------
+# mattermost:
+#   ssh:
+#     host: "mm.company.com"
+#     user: "admin"
+#     key_path: "~/.ssh/id_rsa"
+#   config_path: "/opt/mattermost/config/config.json"
+#
+# matrix:
+#   ssh:
+#     host: "matrix.company.com"
+#     user: "admin"
+#     key_path: "~/.ssh/id_rsa"
+#   auth:
+#     username: "admin"
+#     password_env: "MATRIX_ADMIN_PASSWORD"
+#   homeserver: "company.com"
+
+
+# Example 2: Mattermost with root password, Matrix with key
+# ---------------------------------------------------------
+# mattermost:
+#   ssh:
+#     host: "mm.company.com"
+#     user: "root"
+#     password_env: "MM_SSH_PASSWORD"  # export MM_SSH_PASSWORD="rootpass"
+#   config_path: "/opt/mattermost/config/config.json"
+#
+# matrix:
+#   ssh:
+#     host: "matrix.company.com"
+#     user: "admin"
+#     key_path: "~/.ssh/id_rsa"
+#   auth:
+#     username: "admin"
+#     password_env: "MATRIX_ADMIN_PASSWORD"
+#   homeserver: "company.com"
+
+
+# Example 3: Both with password auth
+# ----------------------------------
+# mattermost:
+#   ssh:
+#     host: "mm.company.com"
+#     user: "root"
+#     password_env: "MM_SSH_PASSWORD"
+#   config_path: "/opt/mattermost/config/config.json"
+#
+# matrix:
+#   ssh:
+#     host: "matrix.company.com"
+#     user: "root"
+#     password_env: "MX_SSH_PASSWORD"
+#   auth:
+#     username: "admin"
+#     password_env: "MATRIX_ADMIN_PASSWORD"
+#   homeserver: "company.com"

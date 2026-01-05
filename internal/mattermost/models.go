@@ -1,0 +1,196 @@
+package mattermost
+
+import "time"
+
+// User represents a Mattermost user
+type User struct {
+	ID        string    `json:"id" db:"id"`
+	Username  string    `json:"username" db:"username"`
+	Email     string    `json:"email" db:"email"`
+	FirstName string    `json:"first_name" db:"firstname"`
+	LastName  string    `json:"last_name" db:"lastname"`
+	Nickname  string    `json:"nickname" db:"nickname"`
+	Position  string    `json:"position" db:"position"`
+	Locale    string    `json:"locale" db:"locale"`
+	Timezone  string    `json:"timezone" db:"timezone"`
+	CreateAt  int64     `json:"create_at" db:"createat"`
+	UpdateAt  int64     `json:"update_at" db:"updateat"`
+	DeleteAt  int64     `json:"delete_at" db:"deleteat"`
+	Roles     string    `json:"roles" db:"roles"`
+}
+
+// IsDeleted returns true if the user is deleted
+func (u *User) IsDeleted() bool {
+	return u.DeleteAt > 0
+}
+
+// CreatedTime returns the creation time as time.Time
+func (u *User) CreatedTime() time.Time {
+	return time.UnixMilli(u.CreateAt)
+}
+
+// Team represents a Mattermost team (workspace)
+type Team struct {
+	ID              string `json:"id" db:"id"`
+	Name            string `json:"name" db:"name"`
+	DisplayName     string `json:"display_name" db:"displayname"`
+	Description     string `json:"description" db:"description"`
+	Email           string `json:"email" db:"email"`
+	Type            string `json:"type" db:"type"`
+	CompanyName     string `json:"company_name" db:"companyname"`
+	AllowedDomains  string `json:"allowed_domains" db:"alloweddomains"`
+	InviteID        string `json:"invite_id" db:"inviteid"`
+	AllowOpenInvite bool   `json:"allow_open_invite" db:"allowopeninvite"`
+	CreateAt        int64  `json:"create_at" db:"createat"`
+	UpdateAt        int64  `json:"update_at" db:"updateat"`
+	DeleteAt        int64  `json:"delete_at" db:"deleteat"`
+}
+
+// IsDeleted returns true if the team is deleted
+func (t *Team) IsDeleted() bool {
+	return t.DeleteAt > 0
+}
+
+// IsOpen returns true if the team is open (public)
+func (t *Team) IsOpen() bool {
+	return t.Type == "O"
+}
+
+// Channel represents a Mattermost channel
+type Channel struct {
+	ID          string `json:"id" db:"id"`
+	TeamID      string `json:"team_id" db:"teamid"`
+	Name        string `json:"name" db:"name"`
+	DisplayName string `json:"display_name" db:"displayname"`
+	Header      string `json:"header" db:"header"`
+	Purpose     string `json:"purpose" db:"purpose"`
+	Type        string `json:"type" db:"type"`
+	CreateAt    int64  `json:"create_at" db:"createat"`
+	UpdateAt    int64  `json:"update_at" db:"updateat"`
+	DeleteAt    int64  `json:"delete_at" db:"deleteat"`
+	CreatorID   string `json:"creator_id" db:"creatorid"`
+	TotalMsgCount int64 `json:"total_msg_count" db:"totalmsgcount"`
+}
+
+// IsDeleted returns true if the channel is deleted
+func (c *Channel) IsDeleted() bool {
+	return c.DeleteAt > 0
+}
+
+// IsPublic returns true if the channel is public
+func (c *Channel) IsPublic() bool {
+	return c.Type == "O"
+}
+
+// IsPrivate returns true if the channel is private
+func (c *Channel) IsPrivate() bool {
+	return c.Type == "P"
+}
+
+// IsDirect returns true if the channel is a direct message
+func (c *Channel) IsDirect() bool {
+	return c.Type == "D"
+}
+
+// IsGroup returns true if the channel is a group message
+func (c *Channel) IsGroup() bool {
+	return c.Type == "G"
+}
+
+// TeamMember represents a user's membership in a team
+type TeamMember struct {
+	TeamID   string `json:"team_id" db:"teamid"`
+	UserID   string `json:"user_id" db:"userid"`
+	Roles    string `json:"roles" db:"roles"`
+	DeleteAt int64  `json:"delete_at" db:"deleteat"`
+	CreateAt int64  `json:"create_at" db:"-"` // May not exist in older versions
+}
+
+// IsDeleted returns true if the membership is deleted
+func (tm *TeamMember) IsDeleted() bool {
+	return tm.DeleteAt > 0
+}
+
+// IsAdmin returns true if the member has admin role
+func (tm *TeamMember) IsAdmin() bool {
+	return tm.Roles == "team_admin" || tm.Roles == "team_admin team_user"
+}
+
+// ChannelMember represents a user's membership in a channel
+type ChannelMember struct {
+	ChannelID   string `json:"channel_id" db:"channelid"`
+	UserID      string `json:"user_id" db:"userid"`
+	Roles       string `json:"roles" db:"roles"`
+	NotifyProps string `json:"notify_props" db:"notifyprops"`
+	LastViewedAt int64 `json:"last_viewed_at" db:"lastviewedat"`
+	MsgCount    int64  `json:"msg_count" db:"msgcount"`
+}
+
+// IsAdmin returns true if the member has admin role
+func (cm *ChannelMember) IsAdmin() bool {
+	return cm.Roles == "channel_admin" || cm.Roles == "channel_admin channel_user"
+}
+
+// Assets represents all exportable data from Mattermost
+type Assets struct {
+	ExportedAt int64     `json:"exported_at"`
+	Version    string    `json:"version"`
+	Users      []User    `json:"users"`
+	Teams      []Team    `json:"teams"`
+	Channels   []Channel `json:"channels"`
+}
+
+// Memberships represents all membership data from Mattermost
+type Memberships struct {
+	ExportedAt      int64           `json:"exported_at"`
+	Version         string          `json:"version"`
+	TeamMembers     []TeamMember    `json:"team_members"`
+	ChannelMembers  []ChannelMember `json:"channel_members"`
+}
+
+// ExportStats holds statistics about an export
+type ExportStats struct {
+	UsersTotal      int `json:"users_total"`
+	UsersActive     int `json:"users_active"`
+	TeamsTotal      int `json:"teams_total"`
+	TeamsActive     int `json:"teams_active"`
+	ChannelsTotal   int `json:"channels_total"`
+	ChannelsActive  int `json:"channels_active"`
+	ChannelsPublic  int `json:"channels_public"`
+	ChannelsPrivate int `json:"channels_private"`
+}
+
+// CalculateStats calculates export statistics from assets
+func (a *Assets) CalculateStats() ExportStats {
+	stats := ExportStats{
+		UsersTotal:    len(a.Users),
+		TeamsTotal:    len(a.Teams),
+		ChannelsTotal: len(a.Channels),
+	}
+
+	for _, u := range a.Users {
+		if !u.IsDeleted() {
+			stats.UsersActive++
+		}
+	}
+
+	for _, t := range a.Teams {
+		if !t.IsDeleted() {
+			stats.TeamsActive++
+		}
+	}
+
+	for _, c := range a.Channels {
+		if !c.IsDeleted() {
+			stats.ChannelsActive++
+			if c.IsPublic() {
+				stats.ChannelsPublic++
+			} else if c.IsPrivate() {
+				stats.ChannelsPrivate++
+			}
+		}
+	}
+
+	return stats
+}
+
