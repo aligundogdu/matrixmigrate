@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/aligundogdu/matrixmigrate/internal/logger"
 )
 
 // LoginRequest represents a Matrix login request
@@ -37,6 +40,11 @@ type LoginFlowsResponse struct {
 
 // Login authenticates with Matrix and returns an access token
 func Login(baseURL, username, password string) (*LoginResponse, error) {
+	return LoginWithRetry(baseURL, username, password, 5, 2*time.Second)
+}
+
+// LoginWithRetry authenticates with Matrix with retry support for rate limiting
+func LoginWithRetry(baseURL, username, password string, maxRetries int, baseDelay time.Duration) (*LoginResponse, error) {
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -55,33 +63,69 @@ func Login(baseURL, username, password string) (*LoginResponse, error) {
 		return nil, fmt.Errorf("failed to marshal login request: %w", err)
 	}
 
-	// Send login request
 	loginURL := baseURL + "/_matrix/client/v3/login"
-	resp, err := httpClient.Post(loginURL, "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("login request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Send login request
+		resp, err := httpClient.Post(loginURL, "application/json", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, fmt.Errorf("login request failed: %w", err)
+		}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		var loginResp LoginResponse
+		if err := json.Unmarshal(respBody, &loginResp); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		// Handle rate limiting (429) with exponential backoff
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt >= maxRetries {
+				return nil, fmt.Errorf("login failed after %d retries: %s - %s", maxRetries, loginResp.Errcode, loginResp.Error)
+			}
+			
+			// Try to use Retry-After header if present
+			var retryAfter time.Duration
+			if retryAfterStr := resp.Header.Get("Retry-After"); retryAfterStr != "" {
+				if seconds, err := strconv.Atoi(retryAfterStr); err == nil {
+					retryAfter = time.Duration(seconds) * time.Second
+				}
+			}
+			
+			// If no Retry-After header, use exponential backoff
+			if retryAfter == 0 {
+				retryAfter = baseDelay * time.Duration(1<<uint(attempt))
+			}
+			
+			// Cap the delay at 60 seconds
+			if retryAfter > 60*time.Second {
+				retryAfter = 60 * time.Second
+			}
+			
+			logger.Warn("Login rate limit hit (429), waiting %v before retry %d/%d", retryAfter, attempt+1, maxRetries)
+			time.Sleep(retryAfter)
+			lastErr = fmt.Errorf("%s - %s", loginResp.Errcode, loginResp.Error)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("login failed: %s - %s", loginResp.Errcode, loginResp.Error)
+		}
+
+		if loginResp.AccessToken == "" {
+			return nil, fmt.Errorf("login succeeded but no access token received")
+		}
+
+		return &loginResp, nil
 	}
 
-	var loginResp LoginResponse
-	if err := json.Unmarshal(respBody, &loginResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("login failed: %s - %s", loginResp.Errcode, loginResp.Error)
-	}
-
-	if loginResp.AccessToken == "" {
-		return nil, fmt.Errorf("login succeeded but no access token received")
-	}
-
-	return &loginResp, nil
+	return nil, fmt.Errorf("login failed after retries: %v", lastErr)
 }
 
 // CheckLoginFlows checks available login methods
