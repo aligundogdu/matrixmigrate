@@ -63,6 +63,7 @@ type DatabaseConfig struct {
 type APIConfig struct {
 	BaseURL       string `mapstructure:"base_url"`
 	AdminTokenEnv string `mapstructure:"admin_token_env"` // Optional: if provided, use this token
+	Port          int    `mapstructure:"port"`            // Synapse API port (default: 8008)
 }
 
 // AuthConfig holds Matrix authentication configuration
@@ -131,6 +132,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mattermost.database.port", 5432)
 	v.SetDefault("matrix.ssh.port", 22)
 	v.SetDefault("matrix.api.base_url", "http://localhost:8008")
+	v.SetDefault("matrix.api.port", 8008) // Synapse API port for SSH tunnel
 	// Rate limiting defaults - conservative values to avoid 429 errors
 	v.SetDefault("matrix.rate_limit.requests_per_second", 5.0)  // 5 req/sec (200ms between requests)
 	v.SetDefault("matrix.rate_limit.max_retries", 5)            // 5 retries before giving up

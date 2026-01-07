@@ -2,6 +2,7 @@
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aligundogdu/matrixmigrate/internal/config"
@@ -50,6 +51,30 @@ func (o *Orchestrator) Close() error {
 		o.mmClient.Close()
 	}
 	return o.tunnelManager.CloseAll()
+}
+
+// waitForTunnel waits for the SSH tunnel to be ready by making HTTP requests
+func (o *Orchestrator) waitForTunnel(baseURL string, timeout time.Duration) error {
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+	
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	
+	for time.Now().Before(deadline) {
+		// Try to connect to the Matrix server's version endpoint
+		resp, err := client.Get(baseURL + "/_matrix/client/versions")
+		if err == nil {
+			resp.Body.Close()
+			logger.Info("SSH tunnel to Matrix API is ready")
+			return nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	
+	return fmt.Errorf("timeout waiting for tunnel: %w", lastErr)
 }
 
 // GetState returns the current migration state
@@ -182,15 +207,23 @@ func (o *Orchestrator) ConnectMatrix() error {
 		return fmt.Errorf("failed to get local port: %w", err)
 	}
 
+	// Get remote API port from config (default: 8008)
+	remotePort := cfg.API.Port
+	if remotePort == 0 {
+		remotePort = 8008
+	}
+
 	// Create SSH tunnel to Matrix API
 	tunnelCfg := ssh.TunnelConfig{
 		SSHConfig:  cfg.SSH,
 		LocalPort:  localPort,
 		RemoteHost: "127.0.0.1",
-		RemotePort: 8008, // Default Synapse port
+		RemotePort: remotePort,
 		Passphrase: passphrase,
 		Password:   sshPassword,
 	}
+
+	logger.Info("Creating SSH tunnel to Matrix API (local:%d -> remote:127.0.0.1:%d)", localPort, remotePort)
 
 	_, err = o.tunnelManager.CreateTunnel("matrix", tunnelCfg)
 	if err != nil {
@@ -199,6 +232,15 @@ func (o *Orchestrator) ConnectMatrix() error {
 
 	// Use local tunnel URL
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", localPort)
+
+	// Wait a moment for the tunnel to be ready
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify tunnel is working by attempting a simple HTTP request
+	if err := o.waitForTunnel(baseURL, 5*time.Second); err != nil {
+		o.tunnelManager.CloseTunnel("matrix")
+		return fmt.Errorf("SSH tunnel to Matrix API is not responding on port %d: %w (is Synapse running and listening on port %d?)", remotePort, err, remotePort)
+	}
 
 	// Get access token (either from config or via login)
 	var accessToken string

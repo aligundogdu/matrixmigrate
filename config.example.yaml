@@ -52,6 +52,9 @@ matrix:
   api:
     # After SSH tunnel, API will be available at localhost
     base_url: "http://localhost:8008"
+    # Synapse API port on the remote server (default: 8008)
+    # Change this if Synapse listens on a different port
+    port: 8008
     # Optional: Use existing admin token instead of login
     # admin_token_env: "MATRIX_ADMIN_TOKEN"
   
