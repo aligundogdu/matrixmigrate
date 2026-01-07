@@ -432,12 +432,18 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 		return steps
 	}
 
+	// Get remote API port from config (default: 8008)
+	remotePort := cfg.Matrix.API.Port
+	if remotePort == 0 {
+		remotePort = 8008
+	}
+
 	// Create tunnel
 	tunnelCfg := ssh.TunnelConfig{
 		SSHConfig:  cfg.Matrix.SSH,
 		LocalPort:  localPort,
 		RemoteHost: "127.0.0.1",
-		RemotePort: 8008,
+		RemotePort: remotePort,
 		Passphrase: passphrase,
 		Password:   sshPassword,
 	}
