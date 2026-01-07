@@ -26,10 +26,18 @@ type MattermostConfig struct {
 
 // MatrixConfig holds Matrix server configuration
 type MatrixConfig struct {
-	SSH        SSHConfig   `mapstructure:"ssh"`
-	API        APIConfig   `mapstructure:"api"`
-	Auth       AuthConfig  `mapstructure:"auth"` // Username/password auth for Matrix API
-	Homeserver string      `mapstructure:"homeserver"`
+	SSH        SSHConfig       `mapstructure:"ssh"`
+	API        APIConfig       `mapstructure:"api"`
+	Auth       AuthConfig      `mapstructure:"auth"` // Username/password auth for Matrix API
+	Homeserver string          `mapstructure:"homeserver"`
+	RateLimit  RateLimitConfig `mapstructure:"rate_limit"` // Rate limiting configuration
+}
+
+// RateLimitConfig holds rate limiting configuration for Matrix API
+type RateLimitConfig struct {
+	RequestsPerSecond float64 `mapstructure:"requests_per_second"` // Max requests per second (0 = no limit)
+	MaxRetries        int     `mapstructure:"max_retries"`         // Max retries on 429 error
+	RetryBaseDelay    int     `mapstructure:"retry_base_delay_ms"` // Base delay in ms for exponential backoff
 }
 
 // SSHConfig holds SSH connection configuration
@@ -123,6 +131,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mattermost.database.port", 5432)
 	v.SetDefault("matrix.ssh.port", 22)
 	v.SetDefault("matrix.api.base_url", "http://localhost:8008")
+	// Rate limiting defaults - conservative values to avoid 429 errors
+	v.SetDefault("matrix.rate_limit.requests_per_second", 5.0)  // 5 req/sec (200ms between requests)
+	v.SetDefault("matrix.rate_limit.max_retries", 5)            // 5 retries before giving up
+	v.SetDefault("matrix.rate_limit.retry_base_delay_ms", 2000) // 2 second base delay
 	v.SetDefault("data.assets_dir", "./data/assets")
 	v.SetDefault("data.mappings_dir", "./data/mappings")
 	v.SetDefault("data.state_file", "./data/state.json")
@@ -209,8 +221,8 @@ func (c *Config) Validate() error {
 
 // HasManualDatabaseConfig returns true if database config is manually specified
 func (c *Config) HasManualDatabaseConfig() bool {
-	return c.Mattermost.Database.Host != "" && 
-		c.Mattermost.Database.Name != "" && 
+	return c.Mattermost.Database.Host != "" &&
+		c.Mattermost.Database.Name != "" &&
 		c.Mattermost.Database.User != ""
 }
 

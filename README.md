@@ -217,6 +217,73 @@ The connection test provides detailed step-by-step diagnostics:
 | `MX_SSH_PASSWORD` | Matrix SSH password | No (if using key) |
 | `SSH_KEY_PASSPHRASE` | SSH key passphrase (if encrypted) | No |
 
+## Rate Limiting
+
+If you're getting too many 429 (rate limit) errors during migration, you have two options:
+
+### Option 1: Adjust Rate Limit Settings in Config
+
+Add rate limiting configuration to your `config.yaml`:
+
+```yaml
+matrix:
+  rate_limit:
+    # Requests per second (lower = slower but safer, 0 = no limit)
+    # Default: 5.0 (200ms between requests)
+    requests_per_second: 2.0
+    
+    # Maximum retries when rate limited (429 error)
+    # Default: 5
+    max_retries: 10
+    
+    # Base delay in milliseconds for exponential backoff
+    # Actual delay: base_delay * 2^retry_count (e.g., 2s, 4s, 8s, 16s, 32s)
+    # Default: 2000 (2 seconds)
+    retry_base_delay_ms: 3000
+```
+
+### Option 2: Temporarily Disable Rate Limiting on Synapse
+
+Add this to your Synapse `homeserver.yaml`:
+
+```yaml
+rc_message:
+  per_second: 0
+  burst_count: 0
+rc_registration:
+  per_second: 0
+  burst_count: 0
+rc_login:
+  address:
+    per_second: 0
+    burst_count: 0
+  account:
+    per_second: 0
+    burst_count: 0
+  failed_attempts:
+    per_second: 0
+    burst_count: 0
+rc_admin_redaction:
+  per_second: 0
+  burst_count: 0
+rc_joins:
+  local:
+    per_second: 0
+    burst_count: 0
+  remote:
+    per_second: 0
+    burst_count: 0
+rc_invites:
+  per_room:
+    per_second: 0
+    burst_count: 0
+  per_user:
+    per_second: 0
+    burst_count: 0
+```
+
+**⚠️ Important:** Remember to restart Synapse (`systemctl restart matrix-synapse`) and **re-enable rate limiting** after the migration is complete for security!
+
 ## Troubleshooting
 
 Use `./matrixmigrate test all` to identify exactly where the connection fails.
@@ -464,6 +531,73 @@ Bağlantı testi detaylı adım adım tanılama sağlar:
 | `MM_SSH_PASSWORD` | Mattermost SSH şifresi | Hayır (anahtar kullanılıyorsa) |
 | `MX_SSH_PASSWORD` | Matrix SSH şifresi | Hayır (anahtar kullanılıyorsa) |
 | `SSH_KEY_PASSPHRASE` | SSH anahtar parolası (şifreli ise) | Hayır |
+
+## Hız Sınırlama (Rate Limiting)
+
+Migrasyon sırasında çok fazla 429 (hız sınırı) hatası alıyorsanız, iki seçeneğiniz var:
+
+### Seçenek 1: Config'de Hız Sınırı Ayarlarını Düzenleyin
+
+`config.yaml` dosyanıza hız sınırlama yapılandırması ekleyin:
+
+```yaml
+matrix:
+  rate_limit:
+    # Saniyede istek sayısı (düşük = yavaş ama güvenli, 0 = sınırsız)
+    # Varsayılan: 5.0 (istekler arası 200ms)
+    requests_per_second: 2.0
+    
+    # Hız sınırı hatası (429) alındığında maksimum deneme sayısı
+    # Varsayılan: 5
+    max_retries: 10
+    
+    # Üstel geri çekilme için milisaniye cinsinden temel gecikme
+    # Gerçek gecikme: temel_gecikme * 2^deneme_sayısı (örn. 2s, 4s, 8s, 16s, 32s)
+    # Varsayılan: 2000 (2 saniye)
+    retry_base_delay_ms: 3000
+```
+
+### Seçenek 2: Synapse'de Hız Sınırlamayı Geçici Olarak Devre Dışı Bırakın
+
+Synapse `homeserver.yaml` dosyanıza şunu ekleyin:
+
+```yaml
+rc_message:
+  per_second: 0
+  burst_count: 0
+rc_registration:
+  per_second: 0
+  burst_count: 0
+rc_login:
+  address:
+    per_second: 0
+    burst_count: 0
+  account:
+    per_second: 0
+    burst_count: 0
+  failed_attempts:
+    per_second: 0
+    burst_count: 0
+rc_admin_redaction:
+  per_second: 0
+  burst_count: 0
+rc_joins:
+  local:
+    per_second: 0
+    burst_count: 0
+  remote:
+    per_second: 0
+    burst_count: 0
+rc_invites:
+  per_room:
+    per_second: 0
+    burst_count: 0
+  per_user:
+    per_second: 0
+    burst_count: 0
+```
+
+**⚠️ Önemli:** Synapse'i yeniden başlatmayı (`systemctl restart matrix-synapse`) ve güvenlik için migrasyon tamamlandıktan sonra **hız sınırlamayı tekrar etkinleştirmeyi** unutmayın!
 
 ## Sorun Giderme
 

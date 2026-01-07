@@ -7,12 +7,29 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aligundogdu/matrixmigrate/internal/logger"
 )
+
+// RateLimitConfig holds rate limiting settings
+type RateLimitConfig struct {
+	RequestsPerSecond float64 // Max requests per second (0 = no limit)
+	MaxRetries        int     // Max retries on 429 error
+	RetryBaseDelay    time.Duration // Base delay for exponential backoff
+}
+
+// DefaultRateLimitConfig returns default rate limiting settings
+func DefaultRateLimitConfig() RateLimitConfig {
+	return RateLimitConfig{
+		RequestsPerSecond: 5.0,               // 5 req/sec
+		MaxRetries:        5,                 // 5 retries
+		RetryBaseDelay:    2 * time.Second,   // 2 second base delay
+	}
+}
 
 // Client represents a Matrix API client
 type Client struct {
@@ -22,21 +39,45 @@ type Client struct {
 	homeserver string
 	
 	// Rate limiting
-	lastRequest time.Time
-	rateLimit   time.Duration
-	mu          sync.Mutex
+	lastRequest     time.Time
+	rateLimit       time.Duration
+	maxRetries      int
+	retryBaseDelay  time.Duration
+	mu              sync.Mutex
 }
 
-// NewClient creates a new Matrix API client
+// NewClient creates a new Matrix API client with default rate limiting
 func NewClient(baseURL, adminToken, homeserver string) *Client {
+	return NewClientWithRateLimit(baseURL, adminToken, homeserver, DefaultRateLimitConfig())
+}
+
+// NewClientWithRateLimit creates a new Matrix API client with custom rate limiting
+func NewClientWithRateLimit(baseURL, adminToken, homeserver string, rlConfig RateLimitConfig) *Client {
+	var rateLimit time.Duration
+	if rlConfig.RequestsPerSecond > 0 {
+		rateLimit = time.Duration(float64(time.Second) / rlConfig.RequestsPerSecond)
+	}
+	
+	maxRetries := rlConfig.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+	
+	retryBaseDelay := rlConfig.RetryBaseDelay
+	if retryBaseDelay <= 0 {
+		retryBaseDelay = 2 * time.Second
+	}
+	
 	return &Client{
-		baseURL:    baseURL,
-		adminToken: adminToken,
-		homeserver: homeserver,
+		baseURL:        baseURL,
+		adminToken:     adminToken,
+		homeserver:     homeserver,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		rateLimit: 100 * time.Millisecond, // 100ms between requests (10 req/sec)
+		rateLimit:      rateLimit,
+		maxRetries:     maxRetries,
+		retryBaseDelay: retryBaseDelay,
 	}
 }
 
@@ -86,14 +127,14 @@ func (c *Client) doRequest(method, endpoint string, body interface{}) ([]byte, i
 
 // doRequestWithRetry performs an HTTP request with retry logic for rate limiting
 func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, retryCount int) ([]byte, int, error) {
-	const maxRetries = 3
-	
 	// Rate limiting: ensure minimum time between requests
 	c.mu.Lock()
-	elapsed := time.Since(c.lastRequest)
-	if elapsed < c.rateLimit {
-		sleepTime := c.rateLimit - elapsed
-		time.Sleep(sleepTime)
+	if c.rateLimit > 0 {
+		elapsed := time.Since(c.lastRequest)
+		if elapsed < c.rateLimit {
+			sleepTime := c.rateLimit - elapsed
+			time.Sleep(sleepTime)
+		}
 	}
 	c.lastRequest = time.Now()
 	c.mu.Unlock()
@@ -129,13 +170,31 @@ func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, r
 
 	// Handle rate limiting (429) with exponential backoff
 	if resp.StatusCode == http.StatusTooManyRequests {
-		if retryCount >= maxRetries {
-			return nil, resp.StatusCode, fmt.Errorf("rate limit exceeded after %d retries", maxRetries)
+		if retryCount >= c.maxRetries {
+			return nil, resp.StatusCode, fmt.Errorf("rate limit exceeded after %d retries", c.maxRetries)
 		}
 		
-		// Exponential backoff: 2s, 4s, 8s
-		retryAfter := time.Duration(1<<uint(retryCount+1)) * time.Second
-		logger.Warn("Rate limit hit (429), waiting %v before retry %d/%d", retryAfter, retryCount+1, maxRetries)
+		// Try to use Retry-After header if present
+		var retryAfter time.Duration
+		if retryAfterStr := resp.Header.Get("Retry-After"); retryAfterStr != "" {
+			// Retry-After can be in seconds (integer) or HTTP-date format
+			if seconds, err := strconv.Atoi(retryAfterStr); err == nil {
+				retryAfter = time.Duration(seconds) * time.Second
+			}
+		}
+		
+		// If no Retry-After header, use exponential backoff
+		if retryAfter == 0 {
+			// Exponential backoff: base * 2^retryCount (e.g., 2s, 4s, 8s, 16s, 32s)
+			retryAfter = c.retryBaseDelay * time.Duration(1<<uint(retryCount))
+		}
+		
+		// Cap the delay at 60 seconds
+		if retryAfter > 60*time.Second {
+			retryAfter = 60 * time.Second
+		}
+		
+		logger.Warn("Rate limit hit (429), waiting %v before retry %d/%d", retryAfter, retryCount+1, c.maxRetries)
 		time.Sleep(retryAfter)
 		
 		// Retry

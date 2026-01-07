@@ -223,8 +223,13 @@ func (o *Orchestrator) ConnectMatrix() error {
 		o.mxToken = accessToken
 	}
 
-	// Create Matrix client
-	client := matrix.NewClient(baseURL, accessToken, cfg.Homeserver)
+	// Create Matrix client with rate limiting from config
+	rlConfig := matrix.RateLimitConfig{
+		RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,
+		MaxRetries:        cfg.RateLimit.MaxRetries,
+		RetryBaseDelay:    time.Duration(cfg.RateLimit.RetryBaseDelay) * time.Millisecond,
+	}
+	client := matrix.NewClientWithRateLimit(baseURL, accessToken, cfg.Homeserver, rlConfig)
 
 	// Test connection
 	if err := client.TestConnection(); err != nil {

@@ -63,6 +63,21 @@ matrix:
   
   # Your Matrix homeserver domain (e.g., for @user:example.com)
   homeserver: "example.com"
+  
+  # Rate limiting configuration (adjust if you get too many 429 errors)
+  rate_limit:
+    # Requests per second (lower = slower but safer, 0 = no limit)
+    # Default: 5.0 (200ms between requests)
+    requests_per_second: 5.0
+    
+    # Maximum retries when rate limited (429 error)
+    # Default: 5
+    max_retries: 5
+    
+    # Base delay in milliseconds for exponential backoff
+    # Actual delay: base_delay * 2^retry_count (e.g., 2s, 4s, 8s, 16s, 32s)
+    # Default: 2000 (2 seconds)
+    retry_base_delay_ms: 2000
 
 # Data storage paths
 data:
@@ -70,6 +85,56 @@ data:
   mappings_dir: "./data/mappings"
   state_file: "./data/state.json"
 
+
+# ========================================
+# SYNAPSE RATE LIMITING - IMPORTANT!
+# ========================================
+#
+# If you're getting too many 429 (rate limit) errors during migration,
+# you can TEMPORARILY disable rate limiting on your Synapse server:
+#
+# Add this to your homeserver.yaml (Synapse config):
+#
+#   rc_message:
+#     per_second: 0
+#     burst_count: 0
+#   rc_registration:
+#     per_second: 0
+#     burst_count: 0
+#   rc_login:
+#     address:
+#       per_second: 0
+#       burst_count: 0
+#     account:
+#       per_second: 0
+#       burst_count: 0
+#     failed_attempts:
+#       per_second: 0
+#       burst_count: 0
+#   rc_admin_redaction:
+#     per_second: 0
+#     burst_count: 0
+#   rc_joins:
+#     local:
+#       per_second: 0
+#       burst_count: 0
+#     remote:
+#       per_second: 0
+#       burst_count: 0
+#   rc_invites:
+#     per_room:
+#       per_second: 0
+#       burst_count: 0
+#     per_user:
+#       per_second: 0
+#       burst_count: 0
+#
+# IMPORTANT: Remember to restart Synapse and re-enable rate limiting
+# after the migration is complete for security!
+#
+# To restart Synapse:
+#   systemctl restart matrix-synapse  (or your docker command)
+#
 
 # ========================================
 # EXAMPLE CONFIGURATIONS
