@@ -248,38 +248,41 @@ Add this to your Synapse `homeserver.yaml`:
 
 ```yaml
 rc_message:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_registration:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_login:
   address:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   account:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   failed_attempts:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
 rc_admin_redaction:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_joins:
   local:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   remote:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
 rc_invites:
   per_room:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   per_user:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
+rc_room_creation:
+  per_second: 10000
+  burst_count: 10000
 ```
 
 **⚠️ Important:** Remember to restart Synapse (`systemctl restart matrix-synapse`) and **re-enable rate limiting** after the migration is complete for security!
@@ -563,39 +566,43 @@ Synapse `homeserver.yaml` dosyanıza şunu ekleyin:
 
 ```yaml
 rc_message:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_registration:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_login:
   address:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   account:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   failed_attempts:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
 rc_admin_redaction:
-  per_second: 0
-  burst_count: 0
+  per_second: 10000
+  burst_count: 10000
 rc_joins:
   local:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   remote:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
 rc_invites:
   per_room:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
   per_user:
-    per_second: 0
-    burst_count: 0
+    per_second: 10000
+    burst_count: 10000
+rc_room_creation:
+  per_second: 10000
+  burst_count: 10000
 ```
+
 
 **⚠️ Önemli:** Synapse'i yeniden başlatmayı (`systemctl restart matrix-synapse`) ve güvenlik için migrasyon tamamlandıktan sonra **hız sınırlamayı tekrar etkinleştirmeyi** unutmayın!
 
