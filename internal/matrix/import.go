@@ -233,6 +233,8 @@ func (i *Importer) ApplyTeamMemberships(
 	stats := &ImportStats{}
 	total := len(memberships)
 
+	logger.Info("Starting team membership import: %d memberships to process", total)
+
 	for idx, membership := range memberships {
 		if progress != nil {
 			progress("team_memberships", idx+1, total, "")
@@ -240,6 +242,7 @@ func (i *Importer) ApplyTeamMemberships(
 
 		// Skip deleted memberships
 		if membership.IsDeleted() {
+			logger.Info("Team membership %d/%d: deleted, skipping", idx+1, total)
 			stats.MembersSkipped++
 			continue
 		}
@@ -250,24 +253,30 @@ func (i *Importer) ApplyTeamMemberships(
 
 		if !userExists || !spaceExists {
 			if !userExists {
-				logger.Warn("Team membership skipped: user %s not in mapping", membership.UserID)
+				logger.Warn("Team membership %d/%d skipped: user %s not in mapping", idx+1, total, membership.UserID)
 			}
 			if !spaceExists {
-				logger.Warn("Team membership skipped: team %s not in mapping", membership.TeamID)
+				logger.Warn("Team membership %d/%d skipped: team %s not in mapping", idx+1, total, membership.TeamID)
 			}
 			stats.MembersSkipped++
 			continue
 		}
 
+		logger.Info("Team membership %d/%d: inviting %s to space %s", idx+1, total, userID, spaceID)
+
 		// Invite user to space
 		if err := i.client.InviteUser(spaceID, userID); err != nil {
-			logger.Error("Failed to invite %s to space %s: %v", userID, spaceID, err)
+			logger.Error("Team membership %d/%d failed: %s -> %s: %v", idx+1, total, userID, spaceID, err)
 			stats.MembersFailed++
 			continue
 		}
 
+		logger.Success("Team membership %d/%d: %s added to space", idx+1, total, userID)
 		stats.MembersAdded++
 	}
+
+	logger.Info("Team membership import completed: added=%d, skipped=%d, failed=%d", 
+		stats.MembersAdded, stats.MembersSkipped, stats.MembersFailed)
 
 	return stats, nil
 }
@@ -282,6 +291,8 @@ func (i *Importer) ApplyChannelMemberships(
 	stats := &ImportStats{}
 	total := len(memberships)
 
+	logger.Info("Starting channel membership import: %d memberships to process", total)
+
 	for idx, membership := range memberships {
 		if progress != nil {
 			progress("channel_memberships", idx+1, total, "")
@@ -293,24 +304,30 @@ func (i *Importer) ApplyChannelMemberships(
 
 		if !userExists || !roomExists {
 			if !userExists {
-				logger.Warn("Channel membership skipped: user %s not in mapping", membership.UserID)
+				logger.Warn("Channel membership %d/%d skipped: user %s not in mapping", idx+1, total, membership.UserID)
 			}
 			if !roomExists {
-				logger.Warn("Channel membership skipped: channel %s not in mapping", membership.ChannelID)
+				logger.Warn("Channel membership %d/%d skipped: channel %s not in mapping", idx+1, total, membership.ChannelID)
 			}
 			stats.MembersSkipped++
 			continue
 		}
 
+		logger.Info("Channel membership %d/%d: inviting %s to room %s", idx+1, total, userID, roomID)
+
 		// Invite user to room
 		if err := i.client.InviteUser(roomID, userID); err != nil {
-			logger.Error("Failed to invite %s to room %s: %v", userID, roomID, err)
+			logger.Error("Channel membership %d/%d failed: %s -> %s: %v", idx+1, total, userID, roomID, err)
 			stats.MembersFailed++
 			continue
 		}
 
+		logger.Success("Channel membership %d/%d: %s added to room", idx+1, total, userID)
 		stats.MembersAdded++
 	}
+
+	logger.Info("Channel membership import completed: added=%d, skipped=%d, failed=%d", 
+		stats.MembersAdded, stats.MembersSkipped, stats.MembersFailed)
 
 	return stats, nil
 }

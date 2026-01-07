@@ -552,26 +552,34 @@ func (o *Orchestrator) ExportMemberships(progress ProgressCallback) (*OperationR
 func (o *Orchestrator) ImportMemberships(progress ProgressCallback) (*OperationResult, error) {
 	result := &OperationResult{}
 
+	logger.Info("=== ImportMemberships Started ===")
+
 	if o.mxClient == nil {
+		logger.Error("Not connected to Matrix")
 		return nil, fmt.Errorf("not connected to Matrix")
 	}
 
 	// Check if we can run this step
 	canRun, reason := o.state.CanRunStep(StepImportMemberships)
 	if !canRun {
+		logger.Error("Cannot run step: %s", reason)
 		return nil, fmt.Errorf("cannot run step: %s", reason)
 	}
 
 	// Get the membership file and mapping file from previous steps
 	membershipFile := o.state.GetStepOutputFile(StepExportMemberships)
 	if membershipFile == "" {
+		logger.Error("No membership file found from export step")
 		return nil, fmt.Errorf("no membership file found from export step")
 	}
+	logger.Info("Using membership file: %s", membershipFile)
 
 	mappingFile := o.state.GetStepOutputFile(StepImportAssets)
 	if mappingFile == "" {
+		logger.Error("No mapping file found from import assets step")
 		return nil, fmt.Errorf("no mapping file found from import assets step")
 	}
+	logger.Info("Using mapping file: %s", mappingFile)
 
 	// Start step
 	o.state.StartStep(StepImportMemberships)
@@ -580,20 +588,28 @@ func (o *Orchestrator) ImportMemberships(progress ProgressCallback) (*OperationR
 	}
 
 	// Load memberships
+	logger.Info("Loading memberships from file...")
 	var memberships mattermost.Memberships
 	if err := archive.LoadGzipJSON(membershipFile, &memberships); err != nil {
+		logger.Error("Failed to load memberships: %v", err)
 		o.state.FailStep(StepImportMemberships, err)
 		o.SaveState()
 		return nil, fmt.Errorf("failed to load memberships: %w", err)
 	}
+	logger.Info("Loaded %d team memberships, %d channel memberships", 
+		len(memberships.TeamMembers), len(memberships.ChannelMembers))
 
 	// Load mapping
+	logger.Info("Loading mapping from file...")
 	mapping, err := LoadMapping(mappingFile)
 	if err != nil {
+		logger.Error("Failed to load mapping: %v", err)
 		o.state.FailStep(StepImportMemberships, err)
 		o.SaveState()
 		return nil, fmt.Errorf("failed to load mapping: %w", err)
 	}
+	logger.Info("Loaded mapping: %d users, %d teams, %d channels", 
+		len(mapping.Users), len(mapping.Teams), len(mapping.Channels))
 
 	// Create importer
 	importer := matrix.NewImporter(o.mxClient)
@@ -633,6 +649,11 @@ func (o *Orchestrator) ImportMemberships(progress ProgressCallback) (*OperationR
 	result.MembersAdded = teamStats.MembersAdded + channelStats.MembersAdded
 	result.MembersSkipped = teamStats.MembersSkipped + channelStats.MembersSkipped
 	result.MembersFailed = teamStats.MembersFailed + channelStats.MembersFailed
+
+	logger.Info("=== ImportMemberships Completed ===")
+	logger.Info("Total: added=%d, skipped=%d, failed=%d", 
+		result.MembersAdded, result.MembersSkipped, result.MembersFailed)
+	logger.Success("Membership import completed successfully")
 
 	// Complete step
 	o.state.CompleteStep(StepImportMemberships, "")
