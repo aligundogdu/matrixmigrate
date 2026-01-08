@@ -2,6 +2,8 @@
 
 A CLI tool for migrating from Mattermost to Matrix Synapse with multi-step, resumable migration support.
 
+![MatrixMigrate TUI](img/ss-1.png)
+
 ## Features
 
 - **Multi-step Migration**: Migrate users, teams, channels, and memberships in organized steps
@@ -14,6 +16,15 @@ A CLI tool for migrating from Mattermost to Matrix Synapse with multi-step, resu
 - **Detailed Connection Tests**: Step-by-step connection diagnostics for precise troubleshooting
 - **Resumable**: Checkpoint-based migration that can be paused and resumed
 - **Mapping Files**: Generates mapping files to track Mattermost → Matrix entity relationships
+- **Application Service Support**: Import messages with original timestamps
+
+## Screenshots
+
+### Main Menu
+![Main Menu](img/ss-1.png)
+
+### Connection Test
+![Connection Test](img/ss-2.png)
 
 ## Installation
 
@@ -26,7 +37,7 @@ Or build from source:
 ```bash
 git clone https://github.com/aligundogdu/matrixmigrate.git
 cd matrixmigrate
-go build -o matrixmigrate ./cmd/matrixmigrate
+make build
 ```
 
 ## Configuration
@@ -153,6 +164,7 @@ The connection test provides detailed step-by-step diagnostics:
    ✓ SSH connection (admin@matrix.example.com:22)
    ✓ API authentication (Login as admin via $MATRIX_ADMIN_PASSWORD)
    ✓ API connection (Homeserver: example.com)
+   ⚠ Application Service (Not configured - message timestamps won't be preserved)
 
 ✓ All connection tests passed!
 ```
@@ -177,28 +189,30 @@ The connection test provides detailed step-by-step diagnostics:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Local Machine                            │
-│  ┌─────────────┐  ┌──────────┐  ┌─────────────────────────┐│
-│  │ MatrixMigrate│  │ Config   │  │ Data Store              ││
-│  │     CLI     │──│  YAML    │  │ - assets/*.json.gz      ││
-│  └──────┬──────┘  └──────────┘  │ - mappings/*.json       ││
-│         │                       │ - state.json            ││
-│         │                       └─────────────────────────┘│
-└─────────┼───────────────────────────────────────────────────┘
-          │
-    ┌─────┴─────┐
-    │           │
-    ▼           ▼
-┌────────┐  ┌────────┐
-│Mattermost│  │ Matrix │
-│SSH (key/ │  │SSH (key/│
-│password) │  │password)│
-│    ↓     │  │   ↓    │
-│config.json│  │  API   │
-│    ↓     │  │   ↓    │
-│PostgreSQL│  │Login/Token
-└────────┘  └────────┘
++-------------------------------------------------------------+
+|                      Local Machine                          |
+|  +--------------+  +----------+  +------------------------+ |
+|  | MatrixMigrate|  |  Config  |  |      Data Store        | |
+|  |     CLI      |--|   YAML   |  | - assets/*.json.gz     | |
+|  +------+-------+  +----------+  | - mappings/*.json      | |
+|         |                        | - state.json           | |
+|         |                        +------------------------+ |
++---------+-------------------------------------------------------+
+          |
+    +-----+-----+
+    |           |
+    v           v
++----------+  +----------+
+|Mattermost|  |  Matrix  |
+|SSH (key/ |  |SSH (key/ |
+| password)|  | password)|
+|    |     |  |    |     |
+|    v     |  |    v     |
+|config.json  |   API    |
+|    |     |  |    |     |
+|    v     |  |    v     |
+|PostgreSQL|  |Login/Token
++----------+  +----------+
 ```
 
 ## Mattermost → Matrix Mapping
@@ -308,6 +322,8 @@ This is normal behavior and the tool will eventually complete all imports.
 
 To import messages with their **original timestamps**, you need to configure an Application Service (AS) on your Synapse server. Without AS, messages will be imported with the current timestamp.
 
+**Note:** The connection test will show a warning (⚠) if Application Service is not configured, reminding you that message timestamps won't be preserved.
+
 ### Step 1: Generate Tokens
 
 ```bash
@@ -379,81 +395,6 @@ export MATRIX_AS_TOKEN="YOUR_GENERATED_AS_TOKEN"
 
 ---
 
-## Application Service Kurulumu (Mesaj Aktarımı için)
-
-Mesajları **orijinal zaman damgalarıyla** aktarmak için Synapse sunucunuzda bir Application Service (AS) yapılandırmanız gerekir. AS olmadan mesajlar mevcut zaman damgasıyla aktarılır.
-
-### Adım 1: Token'ları Oluşturun
-
-```bash
-# AS token oluştur
-openssl rand -hex 32
-# Örnek çıktı: a1b2c3d4e5f6...
-
-# HS token oluştur
-openssl rand -hex 32
-# Örnek çıktı: 9z8y7x6w5v4u...
-```
-
-### Adım 2: Registration Dosyası Oluşturun
-
-Synapse sunucunuzda bir dosya oluşturun (örn. `/etc/matrix-synapse/matrixmigrate.yaml`):
-
-```yaml
-id: matrixmigrate
-url: null  # Callback URL gerekli değil - sadece giden
-as_token: "OLUŞTURDUĞUNUZ_AS_TOKEN"
-hs_token: "OLUŞTURDUĞUNUZ_HS_TOKEN"
-sender_localpart: matrixmigrate
-rate_limited: false  # AS için hız sınırlamasını devre dışı bırak
-namespaces:
-  users: []
-  rooms: []
-  aliases: []
-```
-
-### Adım 3: Synapse'e Kaydedin
-
-`homeserver.yaml` dosyanıza ekleyin:
-
-```yaml
-app_service_config_files:
-  - /etc/matrix-synapse/matrixmigrate.yaml
-```
-
-Ardından Synapse'i yeniden başlatın:
-
-```bash
-systemctl restart matrix-synapse
-```
-
-### Adım 4: MatrixMigrate'i Yapılandırın
-
-`config.yaml` dosyanıza ekleyin:
-
-```yaml
-matrix:
-  appservice:
-    enabled: true
-    as_token_env: "MATRIX_AS_TOKEN"
-```
-
-Ortam değişkenini ayarlayın:
-
-```bash
-export MATRIX_AS_TOKEN="OLUŞTURDUĞUNUZ_AS_TOKEN"
-```
-
-### Adım 5: Mesajları Aktarın
-
-```bash
-./matrixmigrate import messages
-```
-
-**Not:** AS token'ı, migrasyon aracının kullanıcılar adına orijinal zaman damgalarıyla mesaj göndermesini sağlar. Mesaj geçmişini doğru şekilde korumak için tek yol budur.
-
----
-
 ## Troubleshooting
 
 Use `./matrixmigrate test all` to identify exactly where the connection fails.
@@ -477,6 +418,11 @@ Use `./matrixmigrate test all` to identify exactly where the connection fails.
 - The tool reads credentials from Mattermost's config.json automatically
 - Ensure PostgreSQL is running and accessible from localhost on the Mattermost server
 
+### Application Service Warning
+- If you see "⚠ Application Service (Not configured)" in the connection test, this means:
+  - Messages will be imported with current timestamps instead of original timestamps
+  - To fix: Follow the "Application Service Setup" section above
+
 ## License
 
 MIT License
@@ -486,6 +432,8 @@ MIT License
 # MatrixMigrate (Türkçe)
 
 Mattermost'tan Matrix Synapse'a çok adımlı, devam ettirilebilir taşıma desteği sunan bir CLI aracı.
+
+![MatrixMigrate TUI](img/ss-1.png)
 
 ## Özellikler
 
@@ -499,6 +447,15 @@ Mattermost'tan Matrix Synapse'a çok adımlı, devam ettirilebilir taşıma dest
 - **Detaylı Bağlantı Testleri**: Sorunları tam olarak belirlemek için adım adım bağlantı tanılama
 - **Devam Ettirilebilir**: Duraklatılıp devam ettirilebilen kontrol noktası tabanlı taşıma
 - **Eşleme Dosyaları**: Mattermost → Matrix varlık ilişkilerini izlemek için eşleme dosyaları oluşturur
+- **Application Service Desteği**: Mesajları orijinal zaman damgalarıyla aktarın
+
+## Ekran Görüntüleri
+
+### Ana Menü
+![Ana Menü](img/ss-1.png)
+
+### Bağlantı Testi
+![Bağlantı Testi](img/ss-2.png)
 
 ## Kurulum
 
@@ -511,7 +468,7 @@ Veya kaynaktan derleyin:
 ```bash
 git clone https://github.com/aligundogdu/matrixmigrate.git
 cd matrixmigrate
-go build -o matrixmigrate ./cmd/matrixmigrate
+make build
 ```
 
 ## Yapılandırma
@@ -638,6 +595,7 @@ Bağlantı testi detaylı adım adım tanılama sağlar:
    ✓ SSH bağlantısı (admin@matrix.example.com:22)
    ✓ API kimlik doğrulama ($MATRIX_ADMIN_PASSWORD ile admin olarak giriş)
    ✓ API bağlantısı (Homeserver: example.com)
+   ⚠ Application Service (Yapılandırılmamış - mesaj zaman damgaları korunmayacak)
 
 ✓ Tüm bağlantı testleri başarılı!
 ```
@@ -662,28 +620,30 @@ Bağlantı testi detaylı adım adım tanılama sağlar:
 ## Mimari
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Yerel Makine                             │
-│  ┌─────────────┐  ┌──────────┐  ┌─────────────────────────┐│
-│  │ MatrixMigrate│  │ Config   │  │ Veri Deposu             ││
-│  │     CLI     │──│  YAML    │  │ - assets/*.json.gz      ││
-│  └──────┬──────┘  └──────────┘  │ - mappings/*.json       ││
-│         │                       │ - state.json            ││
-│         │                       └─────────────────────────┘│
-└─────────┼───────────────────────────────────────────────────┘
-          │
-    ┌─────┴─────┐
-    │           │
-    ▼           ▼
-┌────────┐  ┌────────┐
-│Mattermost│  │ Matrix │
-│SSH (anahtar/│ │SSH (anahtar/│
-│şifre)   │  │şifre)  │
-│    ↓     │  │   ↓    │
-│config.json│  │  API   │
-│    ↓     │  │   ↓    │
-│PostgreSQL│  │Giriş/Token
-└────────┘  └────────┘
++-------------------------------------------------------------+
+|                      Yerel Makine                           |
+|  +--------------+  +----------+  +------------------------+ |
+|  | MatrixMigrate|  |  Config  |  |      Veri Deposu       | |
+|  |     CLI      |--|   YAML   |  | - assets/*.json.gz     | |
+|  +------+-------+  +----------+  | - mappings/*.json      | |
+|         |                        | - state.json           | |
+|         |                        +------------------------+ |
++---------+-------------------------------------------------------+
+          |
+    +-----+-----+
+    |           |
+    v           v
++----------+  +----------+
+|Mattermost|  |  Matrix  |
+|SSH(anahtar| |SSH(anahtar|
+|  /şifre) |  |  /şifre) |
+|    |     |  |    |     |
+|    v     |  |    v     |
+|config.json  |   API    |
+|    |     |  |    |     |
+|    v     |  |    v     |
+|PostgreSQL|  |Giriş/Token
++----------+  +----------+
 ```
 
 ## Mattermost → Matrix Eşlemesi
@@ -790,6 +750,83 @@ Migrasyon aracı **devam ettirilebilir** olarak tasarlanmıştır:
 
 Bu normal bir davranıştır ve araç sonunda tüm aktarımları tamamlayacaktır.
 
+## Application Service Kurulumu (Mesaj Aktarımı için)
+
+Mesajları **orijinal zaman damgalarıyla** aktarmak için Synapse sunucunuzda bir Application Service (AS) yapılandırmanız gerekir. AS olmadan mesajlar mevcut zaman damgasıyla aktarılır.
+
+**Not:** Bağlantı testi, Application Service yapılandırılmamışsa bir uyarı (⚠) gösterecek ve mesaj zaman damgalarının korunmayacağını hatırlatacaktır.
+
+### Adım 1: Token'ları Oluşturun
+
+```bash
+# AS token oluştur
+openssl rand -hex 32
+# Örnek çıktı: a1b2c3d4e5f6...
+
+# HS token oluştur
+openssl rand -hex 32
+# Örnek çıktı: 9z8y7x6w5v4u...
+```
+
+### Adım 2: Registration Dosyası Oluşturun
+
+Synapse sunucunuzda bir dosya oluşturun (örn. `/etc/matrix-synapse/matrixmigrate.yaml`):
+
+```yaml
+id: matrixmigrate
+url: null  # Callback URL gerekli değil - sadece giden
+as_token: "OLUŞTURDUĞUNUZ_AS_TOKEN"
+hs_token: "OLUŞTURDUĞUNUZ_HS_TOKEN"
+sender_localpart: matrixmigrate
+rate_limited: false  # AS için hız sınırlamasını devre dışı bırak
+namespaces:
+  users: []
+  rooms: []
+  aliases: []
+```
+
+### Adım 3: Synapse'e Kaydedin
+
+`homeserver.yaml` dosyanıza ekleyin:
+
+```yaml
+app_service_config_files:
+  - /etc/matrix-synapse/matrixmigrate.yaml
+```
+
+Ardından Synapse'i yeniden başlatın:
+
+```bash
+systemctl restart matrix-synapse
+```
+
+### Adım 4: MatrixMigrate'i Yapılandırın
+
+`config.yaml` dosyanıza ekleyin:
+
+```yaml
+matrix:
+  appservice:
+    enabled: true
+    as_token_env: "MATRIX_AS_TOKEN"
+```
+
+Ortam değişkenini ayarlayın:
+
+```bash
+export MATRIX_AS_TOKEN="OLUŞTURDUĞUNUZ_AS_TOKEN"
+```
+
+### Adım 5: Mesajları Aktarın
+
+```bash
+./matrixmigrate import messages
+```
+
+**Not:** AS token'ı, migrasyon aracının kullanıcılar adına orijinal zaman damgalarıyla mesaj göndermesini sağlar. Mesaj geçmişini doğru şekilde korumak için tek yol budur.
+
+---
+
 ## Sorun Giderme
 
 Bağlantının tam olarak nerede başarısız olduğunu belirlemek için `./matrixmigrate test all` kullanın.
@@ -812,6 +849,11 @@ Bağlantının tam olarak nerede başarısız olduğunu belirlemek için `./matr
 ### Veritabanı Bağlantısı Başarısız
 - Araç, kimlik bilgilerini Mattermost'un config.json dosyasından otomatik olarak okur
 - PostgreSQL'in çalıştığından ve Mattermost sunucusunda localhost'tan erişilebilir olduğundan emin olun
+
+### Application Service Uyarısı
+- Bağlantı testinde "⚠ Application Service (Yapılandırılmamış)" görüyorsanız, bu şu anlama gelir:
+  - Mesajlar orijinal zaman damgaları yerine mevcut zaman damgasıyla aktarılacak
+  - Düzeltmek için: Yukarıdaki "Application Service Kurulumu" bölümünü takip edin
 
 ## Lisans
 

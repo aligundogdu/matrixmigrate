@@ -494,6 +494,34 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 	}
 	steps = append(steps, step)
 
+	// Step 5: Application Service configuration (for message timestamps)
+	step = TestStep{
+		Name:        "mx_appservice",
+		Description: "Application Service",
+		Status:      TestPending,
+	}
+
+	if !cfg.Matrix.AppService.Enabled {
+		step.Status = TestWarning
+		step.Error = "Application Service not configured"
+		step.Details = "Message timestamps won't be preserved during import"
+	} else {
+		asToken := cfg.GetASToken()
+		if asToken == "" {
+			step.Status = TestWarning
+			step.Error = fmt.Sprintf("AS token env var not set: %s", cfg.Matrix.AppService.ASTokenEnv)
+			step.Details = "Message timestamps won't be preserved"
+		} else {
+			step.Status = TestPassed
+			step.Details = fmt.Sprintf("Token via $%s", cfg.Matrix.AppService.ASTokenEnv)
+		}
+	}
+
+	if callback != nil {
+		callback("matrix", &step)
+	}
+	steps = append(steps, step)
+
 	return steps
 }
 
