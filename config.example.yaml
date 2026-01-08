@@ -32,6 +32,27 @@ mattermost:
   #   name: "mattermost"
   #   user: "mmuser"
   #   password_env: "MM_DB_PASSWORD"
+  
+  # File attachment migration settings
+  files:
+    # Migration mode:
+    #   "link"   - Keep S3/public URLs in messages (fastest, requires S3 public access)
+    #   "upload" - Download and re-upload files to Matrix (slowest, most portable)
+    #   "skip"   - Don't migrate files (fastest, messages only)
+    mode: "link"
+    
+    # S3 public URL prefix for direct linking
+    # Files will be accessible at: {s3_public_url}/{file_path}
+    # Example: https://s3.example.com/mattermost-bucket
+    s3_public_url: "https://s3.example.com/mattermost-bucket"
+    
+    # Local data path (if using local file storage instead of S3)
+    # local_data_path: "/opt/mattermost/data"
+    
+    # Maximum file size to upload to Matrix (in MB)
+    # Files larger than this will be linked instead of uploaded
+    # Only applies when mode is "upload"
+    max_upload_size_mb: 50
 
 # Matrix Synapse server configuration
 matrix:

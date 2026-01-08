@@ -715,6 +715,7 @@ func (o *Orchestrator) TestMatrixConnection() error {
 type ExportMessagesResult struct {
 	OutputFile       string
 	MessagesExported int
+	FilesExported    int
 }
 
 // ExportMessages exports all messages from Mattermost
@@ -768,6 +769,7 @@ func (o *Orchestrator) ExportMessages(progress matrix.ImportProgressCallback) (*
 	return &ExportMessagesResult{
 		OutputFile:       filename,
 		MessagesExported: len(messages.Posts),
+		FilesExported:    len(messages.Files),
 	}, nil
 }
 
@@ -778,6 +780,9 @@ type ImportMessagesResult struct {
 	MessagesFailed   int
 	RepliesImported  int
 	RepliesFailed    int
+	FilesLinked      int
+	FilesUploaded    int
+	FilesSkipped     int
 	MappingFile      string
 }
 
@@ -807,7 +812,16 @@ func (o *Orchestrator) ImportMessages(progress matrix.MessageImportCallback) (*I
 		return nil, fmt.Errorf("failed to load messages: %w", err)
 	}
 
-	logger.Info("Loaded %d messages from %s", len(messages.Posts), messagesFile)
+	logger.Info("Loaded %d messages and %d files from %s", len(messages.Posts), len(messages.Files), messagesFile)
+
+	// Build files by post map
+	filesByPost := make(map[string][]mattermost.FileInfo)
+	for _, file := range messages.Files {
+		if file.PostID != "" {
+			filesByPost[file.PostID] = append(filesByPost[file.PostID], file)
+		}
+	}
+	logger.Info("Built file mapping: %d posts have files", len(filesByPost))
 
 	// Load asset mapping for room and user mappings
 	assetMappingFile := o.state.GetStepOutputFile(StepImportAssets)
@@ -860,12 +874,22 @@ func (o *Orchestrator) ImportMessages(progress matrix.MessageImportCallback) (*I
 		existingMapping[mmID] = entry.MatrixEventID
 	}
 
-	// Import messages
-	result, err := importer.ImportMessages(
+	// Build file config
+	fileConfig := &matrix.FileConfig{
+		Mode:          o.config.GetFileMode(),
+		S3PublicURL:   o.config.Mattermost.Files.S3PublicURL,
+		MaxUploadSize: o.config.GetMaxUploadSize(),
+	}
+	logger.Info("File mode: %s, S3 URL: %s", fileConfig.Mode, fileConfig.S3PublicURL)
+
+	// Import messages with files
+	result, err := importer.ImportMessagesWithFiles(
 		messages.Posts,
 		assetMapping.Channels,  // channelID -> roomID
 		assetMapping.Users,     // userID -> matrixUserID
 		existingMapping,        // existing message mapping
+		filesByPost,            // post ID -> files
+		fileConfig,             // file migration settings
 		progress,
 	)
 	if err != nil {
@@ -910,6 +934,8 @@ func (o *Orchestrator) ImportMessages(progress matrix.MessageImportCallback) (*I
 		result.Stats.MessagesImported, result.Stats.MessagesSkipped, result.Stats.MessagesFailed)
 	logger.Info("Replies: imported=%d, failed=%d",
 		result.Stats.RepliesImported, result.Stats.RepliesFailed)
+	logger.Info("Files: linked=%d, uploaded=%d, skipped=%d",
+		result.Stats.FilesLinked, result.Stats.FilesUploaded, result.Stats.FilesSkipped)
 	logger.Success("Message import completed successfully")
 
 	// Complete step
@@ -924,6 +950,9 @@ func (o *Orchestrator) ImportMessages(progress matrix.MessageImportCallback) (*I
 		MessagesFailed:   result.Stats.MessagesFailed,
 		RepliesImported:  result.Stats.RepliesImported,
 		RepliesFailed:    result.Stats.RepliesFailed,
+		FilesLinked:      result.Stats.FilesLinked,
+		FilesUploaded:    result.Stats.FilesUploaded,
+		FilesSkipped:     result.Stats.FilesSkipped,
 		MappingFile:      newMappingFile,
 	}, nil
 }

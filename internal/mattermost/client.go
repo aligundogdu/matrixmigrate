@@ -399,6 +399,120 @@ func (c *Client) GetPostCountByChannel() (map[string]int, error) {
 	return counts, nil
 }
 
+// GetFileInfos retrieves all file infos from the database
+func (c *Client) GetFileInfos() ([]FileInfo, error) {
+	query := `
+		SELECT 
+			id, 
+			COALESCE(creatorid, '') as creatorid,
+			COALESCE(postid, '') as postid,
+			createat, updateat, deleteat,
+			COALESCE(path, '') as path,
+			COALESCE(thumbnailpath, '') as thumbnailpath,
+			COALESCE(previewpath, '') as previewpath,
+			COALESCE(name, '') as name,
+			COALESCE(extension, '') as extension,
+			COALESCE(size, 0) as size,
+			COALESCE(mimetype, 'application/octet-stream') as mimetype,
+			COALESCE(width, 0) as width,
+			COALESCE(height, 0) as height,
+			COALESCE(haspreviewimage, false) as haspreviewimage
+		FROM fileinfo
+		WHERE deleteat = 0
+		ORDER BY createat ASC
+	`
+
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query file infos: %w", err)
+	}
+	defer rows.Close()
+
+	var files []FileInfo
+	for rows.Next() {
+		var f FileInfo
+		err := rows.Scan(
+			&f.ID, &f.CreatorID, &f.PostID,
+			&f.CreateAt, &f.UpdateAt, &f.DeleteAt,
+			&f.Path, &f.ThumbnailPath, &f.PreviewPath,
+			&f.Name, &f.Extension, &f.Size, &f.MimeType,
+			&f.Width, &f.Height, &f.HasPreviewImage,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file info: %w", err)
+		}
+		files = append(files, f)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating file infos: %w", err)
+	}
+
+	return files, nil
+}
+
+// GetFileInfosByPost retrieves file infos for a specific post
+func (c *Client) GetFileInfosByPost(postID string) ([]FileInfo, error) {
+	query := `
+		SELECT 
+			id, 
+			COALESCE(creatorid, '') as creatorid,
+			COALESCE(postid, '') as postid,
+			createat, updateat, deleteat,
+			COALESCE(path, '') as path,
+			COALESCE(thumbnailpath, '') as thumbnailpath,
+			COALESCE(previewpath, '') as previewpath,
+			COALESCE(name, '') as name,
+			COALESCE(extension, '') as extension,
+			COALESCE(size, 0) as size,
+			COALESCE(mimetype, 'application/octet-stream') as mimetype,
+			COALESCE(width, 0) as width,
+			COALESCE(height, 0) as height,
+			COALESCE(haspreviewimage, false) as haspreviewimage
+		FROM fileinfo
+		WHERE postid = $1 AND deleteat = 0
+		ORDER BY createat ASC
+	`
+
+	rows, err := c.db.Query(query, postID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query file infos for post %s: %w", postID, err)
+	}
+	defer rows.Close()
+
+	var files []FileInfo
+	for rows.Next() {
+		var f FileInfo
+		err := rows.Scan(
+			&f.ID, &f.CreatorID, &f.PostID,
+			&f.CreateAt, &f.UpdateAt, &f.DeleteAt,
+			&f.Path, &f.ThumbnailPath, &f.PreviewPath,
+			&f.Name, &f.Extension, &f.Size, &f.MimeType,
+			&f.Width, &f.Height, &f.HasPreviewImage,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file info: %w", err)
+		}
+		files = append(files, f)
+	}
+
+	return files, nil
+}
+
+// GetFileInfoCount returns the total number of files
+func (c *Client) GetFileInfoCount() (int, error) {
+	var count int
+	err := c.db.QueryRow("SELECT COUNT(*) FROM fileinfo WHERE deleteat = 0").Scan(&count)
+	return count, err
+}
+
+// GetFileInfoTotalSize returns the total size of all files in bytes
+func (c *Client) GetFileInfoTotalSize() (int64, error) {
+	var size int64
+	err := c.db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM fileinfo WHERE deleteat = 0").Scan(&size)
+	return size, err
+}
+
 
 
 

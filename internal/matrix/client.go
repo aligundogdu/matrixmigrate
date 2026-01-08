@@ -707,3 +707,180 @@ func (c *Client) doRequestWithTokenAndRetry(method, endpoint string, body interf
 
 	return respBody, resp.StatusCode, nil
 }
+
+// UploadMediaResponse represents the response from media upload
+type UploadMediaResponse struct {
+	ContentURI string `json:"content_uri"` // mxc://server/media_id
+	Errcode    string `json:"errcode,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// UploadMedia uploads a file to Matrix media repository
+// Returns the mxc:// URI for the uploaded file
+func (c *Client) UploadMedia(data []byte, filename, contentType string) (*UploadMediaResponse, error) {
+	endpoint := fmt.Sprintf("/_matrix/media/v3/upload?filename=%s", url.QueryEscape(filename))
+	
+	// Rate limiting
+	c.mu.Lock()
+	if c.rateLimit > 0 {
+		elapsed := time.Since(c.lastRequest)
+		if elapsed < c.rateLimit {
+			time.Sleep(c.rateLimit - elapsed)
+		}
+	}
+	c.lastRequest = time.Now()
+	c.mu.Unlock()
+	
+	reqURL := c.baseURL + endpoint
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upload request: %w", err)
+	}
+	
+	token := c.adminToken
+	if c.asToken != "" {
+		token = c.asToken
+	}
+	
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", contentType)
+	
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read upload response: %w", err)
+	}
+	
+	var result UploadMediaResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse upload response: %w", err)
+	}
+	
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("upload failed (%d): %s - %s", resp.StatusCode, result.Errcode, result.Error)
+	}
+	
+	return &result, nil
+}
+
+// FileMessageContent represents a file message content
+type FileMessageContent struct {
+	MsgType  string         `json:"msgtype"`           // m.file, m.image, m.video, m.audio
+	Body     string         `json:"body"`              // Filename as fallback
+	URL      string         `json:"url,omitempty"`     // mxc:// URI (for uploaded files)
+	Filename string         `json:"filename,omitempty"`
+	Info     *FileInfo      `json:"info,omitempty"`
+}
+
+// FileInfo contains metadata about the file
+type FileInfo struct {
+	MimeType      string `json:"mimetype,omitempty"`
+	Size          int64  `json:"size,omitempty"`
+	Width         int    `json:"w,omitempty"`          // For images/videos
+	Height        int    `json:"h,omitempty"`          // For images/videos
+	Duration      int    `json:"duration,omitempty"`   // For audio/video in ms
+	ThumbnailURL  string `json:"thumbnail_url,omitempty"`
+	ThumbnailInfo *ThumbnailInfo `json:"thumbnail_info,omitempty"`
+}
+
+// ThumbnailInfo contains metadata about thumbnail
+type ThumbnailInfo struct {
+	MimeType string `json:"mimetype,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	Width    int    `json:"w,omitempty"`
+	Height   int    `json:"h,omitempty"`
+}
+
+// SendFileMessage sends a file message to a room
+func (c *Client) SendFileMessage(roomID string, content *FileMessageContent, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
+	txnID := c.getNextTxnID()
+	
+	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
+		url.PathEscape(roomID), url.PathEscape(txnID))
+	
+	params := url.Values{}
+	if timestamp > 0 && c.asToken != "" {
+		params.Set("ts", strconv.FormatInt(timestamp, 10))
+	}
+	if senderUserID != "" && c.asToken != "" {
+		params.Set("user_id", senderUserID)
+	}
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+	
+	token := c.adminToken
+	if c.asToken != "" {
+		token = c.asToken
+	}
+	
+	body, statusCode, err := c.doRequestWithToken("PUT", endpoint, content, token)
+	if err != nil {
+		return nil, err
+	}
+	
+	var resp SendMessageResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
+	}
+	
+	return &resp, nil
+}
+
+// SendFileLink sends a message with a file link (external URL)
+// Note: Matrix doesn't support external URLs directly in file messages,
+// so we send as a text message with a markdown link
+func (c *Client) SendFileLink(roomID, filename, fileURL, mimeType string, fileSize int64, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
+	// Determine emoji based on file type
+	emoji := "📎"
+	if strings.HasPrefix(mimeType, "image/") {
+		emoji = "🖼️"
+	} else if strings.HasPrefix(mimeType, "video/") {
+		emoji = "🎬"
+	} else if strings.HasPrefix(mimeType, "audio/") {
+		emoji = "🎵"
+	}
+	
+	message := fmt.Sprintf("%s [%s](%s)", emoji, filename, fileURL)
+	
+	return c.SendMessageWithTimestamp(roomID, message, timestamp, senderUserID)
+}
+
+// SendUploadedFile sends a file that was already uploaded to Matrix
+func (c *Client) SendUploadedFile(roomID, mxcURI, filename, mimeType string, fileSize int64, width, height int, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
+	msgType := "m.file"
+	if strings.HasPrefix(mimeType, "image/") {
+		msgType = "m.image"
+	} else if strings.HasPrefix(mimeType, "video/") {
+		msgType = "m.video"
+	} else if strings.HasPrefix(mimeType, "audio/") {
+		msgType = "m.audio"
+	}
+	
+	content := &FileMessageContent{
+		MsgType:  msgType,
+		Body:     filename,
+		URL:      mxcURI,
+		Filename: filename,
+		Info: &FileInfo{
+			MimeType: mimeType,
+			Size:     fileSize,
+		},
+	}
+	
+	if width > 0 && height > 0 {
+		content.Info.Width = width
+		content.Info.Height = height
+	}
+	
+	return c.SendFileMessage(roomID, content, timestamp, senderUserID)
+}

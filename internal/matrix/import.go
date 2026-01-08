@@ -463,6 +463,16 @@ type MessageImportStats struct {
 	MessagesFailed   int `json:"messages_failed"`
 	RepliesImported  int `json:"replies_imported"`
 	RepliesFailed    int `json:"replies_failed"`  // Reply target not found
+	FilesLinked      int `json:"files_linked"`    // Files added as links
+	FilesUploaded    int `json:"files_uploaded"`  // Files uploaded to Matrix
+	FilesSkipped     int `json:"files_skipped"`   // Files skipped
+}
+
+// FileConfig holds file migration settings
+type FileConfig struct {
+	Mode         string // "link", "upload", or "skip"
+	S3PublicURL  string // Base URL for S3 files
+	MaxUploadSize int64 // Max file size for upload
 }
 
 // MessageImportCallback is called for each message imported
@@ -602,6 +612,149 @@ func (i *Importer) ImportMessages(
 	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d",
 		result.Stats.MessagesImported, result.Stats.MessagesSkipped, 
 		result.Stats.MessagesFailed, result.Stats.RepliesImported)
+	
+	return result, nil
+}
+
+// ImportMessagesWithFiles imports messages with file attachments
+// filesByPost maps post ID to list of file infos
+func (i *Importer) ImportMessagesWithFiles(
+	posts []mattermost.Post,
+	channelToRoom map[string]string,
+	userMapping map[string]string,
+	existingMapping map[string]string,
+	filesByPost map[string][]mattermost.FileInfo,
+	fileConfig *FileConfig,
+	progress MessageImportCallback,
+) (*ImportMessagesResult, error) {
+	result := &ImportMessagesResult{
+		Stats:   &MessageImportStats{},
+		Mapping: make(map[string]string),
+		Errors:  []string{},
+	}
+	
+	if !i.client.HasASToken() {
+		logger.Warn("No Application Service token configured - messages will be imported without original timestamps")
+	}
+	
+	total := len(posts)
+	logger.Info("Starting message import with files: %d posts to process", total)
+	
+	// Default file config
+	if fileConfig == nil {
+		fileConfig = &FileConfig{Mode: "skip"}
+	}
+	
+	// Collect all existing mappings
+	for k, v := range existingMapping {
+		result.Mapping[k] = v
+	}
+	
+	// Process messages in order
+	for idx, post := range posts {
+		// Check if already imported
+		if _, exists := existingMapping[post.ID]; exists {
+			result.Stats.MessagesSkipped++
+			if progress != nil {
+				progress(idx+1, total, post.ChannelID, "skipped")
+			}
+			continue
+		}
+		
+		// Get target room
+		roomID, roomExists := channelToRoom[post.ChannelID]
+		if !roomExists {
+			result.Stats.MessagesFailed++
+			result.Errors = append(result.Errors, fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID))
+			if progress != nil {
+				progress(idx+1, total, post.ChannelID, "failed:no_room")
+			}
+			continue
+		}
+		
+		// Get sender
+		senderID, userExists := userMapping[post.UserID]
+		if !userExists {
+			senderID = ""
+			logger.Warn("No user mapping for user %s, message will be sent as AS bot", post.UserID)
+		}
+		
+		// Build message content with files
+		messageContent := post.Message
+		files := filesByPost[post.ID]
+		
+		// Append file links if mode is "link"
+		if fileConfig.Mode == "link" && len(files) > 0 && fileConfig.S3PublicURL != "" {
+			for _, file := range files {
+				fileURL := strings.TrimSuffix(fileConfig.S3PublicURL, "/") + "/" + file.Path
+				messageContent += fmt.Sprintf("\n\n📎 [%s](%s)", file.Name, fileURL)
+				result.Stats.FilesLinked++
+			}
+		}
+		
+		// Handle reply
+		var eventID string
+		
+		if post.IsReply() {
+			parentEventID, parentExists := result.Mapping[post.RootID]
+			if !parentExists {
+				result.Stats.RepliesFailed++
+				result.Errors = append(result.Errors, fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID))
+				
+				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, post.CreateAt, senderID)
+				if sendErr != nil {
+					result.Stats.MessagesFailed++
+					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+					if progress != nil {
+						progress(idx+1, total, post.ChannelID, "failed:send_error")
+					}
+					continue
+				}
+				eventID = resp.EventID
+			} else {
+				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, messageContent, parentEventID, post.CreateAt, senderID)
+				if sendErr != nil {
+					result.Stats.RepliesFailed++
+					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
+					if progress != nil {
+						progress(idx+1, total, post.ChannelID, "failed:reply_error")
+					}
+					continue
+				}
+				eventID = resp.EventID
+				result.Stats.RepliesImported++
+			}
+		} else {
+			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, post.CreateAt, senderID)
+			if sendErr != nil {
+				result.Stats.MessagesFailed++
+				result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+				if progress != nil {
+					progress(idx+1, total, post.ChannelID, "failed:send_error")
+				}
+				continue
+			}
+			eventID = resp.EventID
+		}
+		
+		// Store mapping
+		result.Mapping[post.ID] = eventID
+		result.Stats.MessagesImported++
+		
+		if progress != nil {
+			progress(idx+1, total, post.ChannelID, "imported")
+		}
+		
+		// Log progress every 100 messages
+		if (idx+1) % 100 == 0 {
+			logger.Info("Message import progress: %d/%d (%.1f%%) - files linked: %d",
+				idx+1, total, float64(idx+1)/float64(total)*100, result.Stats.FilesLinked)
+		}
+	}
+	
+	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d, files_linked=%d",
+		result.Stats.MessagesImported, result.Stats.MessagesSkipped, 
+		result.Stats.MessagesFailed, result.Stats.RepliesImported, result.Stats.FilesLinked)
 	
 	return result, nil
 }

@@ -190,6 +190,7 @@ func runExportMessages(cmd *cobra.Command, args []string) error {
 
 	printSuccess(i18n.T("messages.file_saved", result.OutputFile))
 	printInfo(fmt.Sprintf("  Messages exported: %d", result.MessagesExported))
+	printInfo(fmt.Sprintf("  Files exported: %d", result.FilesExported))
 	printSuccess(i18n.T("messages.step_completed", "export_messages"))
 
 	return nil

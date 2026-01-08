@@ -212,6 +212,8 @@ func runImportMessages(cmd *cobra.Command, args []string) error {
 		result.MessagesImported, result.MessagesSkipped, result.MessagesFailed))
 	printInfo(fmt.Sprintf("  Replies: imported=%d, failed=%d", 
 		result.RepliesImported, result.RepliesFailed))
+	printInfo(fmt.Sprintf("  Files: linked=%d, uploaded=%d, skipped=%d",
+		result.FilesLinked, result.FilesUploaded, result.FilesSkipped))
 	
 	if result.MappingFile != "" {
 		printSuccess(i18n.T("messages.mapping_saved", result.MappingFile))

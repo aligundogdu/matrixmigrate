@@ -210,6 +210,121 @@ type Post struct {
 	FileIDs   string `json:"file_ids" db:"fileids"`    // JSON array of file IDs
 }
 
+// FileInfo represents a Mattermost file attachment
+type FileInfo struct {
+	ID              string `json:"id" db:"id"`
+	CreatorID       string `json:"creator_id" db:"creatorid"`
+	PostID          string `json:"post_id" db:"postid"`
+	CreateAt        int64  `json:"create_at" db:"createat"`
+	UpdateAt        int64  `json:"update_at" db:"updateat"`
+	DeleteAt        int64  `json:"delete_at" db:"deleteat"`
+	Path            string `json:"path" db:"path"`               // Relative path in storage
+	ThumbnailPath   string `json:"thumbnail_path" db:"thumbnailpath"`
+	PreviewPath     string `json:"preview_path" db:"previewpath"`
+	Name            string `json:"name" db:"name"`               // Original filename
+	Extension       string `json:"extension" db:"extension"`     // File extension
+	Size            int64  `json:"size" db:"size"`               // File size in bytes
+	MimeType        string `json:"mime_type" db:"mimetype"`
+	Width           int    `json:"width" db:"width"`             // For images
+	Height          int    `json:"height" db:"height"`           // For images
+	HasPreviewImage bool   `json:"has_preview_image" db:"haspreviewimage"`
+	MiniPreview     []byte `json:"mini_preview,omitempty" db:"minipreview"` // Base64 thumbnail
+}
+
+// IsDeleted returns true if the file is deleted
+func (f *FileInfo) IsDeleted() bool {
+	return f.DeleteAt > 0
+}
+
+// IsImage returns true if the file is an image
+func (f *FileInfo) IsImage() bool {
+	switch f.MimeType {
+	case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/bmp":
+		return true
+	}
+	return false
+}
+
+// IsVideo returns true if the file is a video
+func (f *FileInfo) IsVideo() bool {
+	switch f.MimeType {
+	case "video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-msvideo":
+		return true
+	}
+	return false
+}
+
+// IsAudio returns true if the file is an audio file
+func (f *FileInfo) IsAudio() bool {
+	switch f.MimeType {
+	case "audio/mpeg", "audio/mp3", "audio/ogg", "audio/wav", "audio/webm", "audio/flac":
+		return true
+	}
+	return false
+}
+
+// GetMatrixMsgType returns the Matrix message type for this file
+func (f *FileInfo) GetMatrixMsgType() string {
+	if f.IsImage() {
+		return "m.image"
+	}
+	if f.IsVideo() {
+		return "m.video"
+	}
+	if f.IsAudio() {
+		return "m.audio"
+	}
+	return "m.file"
+}
+
+// CreatedTime returns the creation time as time.Time
+func (f *FileInfo) CreatedTime() time.Time {
+	return time.UnixMilli(f.CreateAt)
+}
+
+// Files represents exported file data from Mattermost
+type Files struct {
+	ExportedAt int64      `json:"exported_at"`
+	Version    string     `json:"version"`
+	Files      []FileInfo `json:"files"`
+}
+
+// FileStats holds statistics about files
+type FileStats struct {
+	TotalFiles   int            `json:"total_files"`
+	TotalSize    int64          `json:"total_size"`
+	Images       int            `json:"images"`
+	Videos       int            `json:"videos"`
+	Audio        int            `json:"audio"`
+	Documents    int            `json:"documents"`
+	ByExtension  map[string]int `json:"by_extension"`
+}
+
+// CalculateFileStats calculates file statistics
+func (f *Files) CalculateFileStats() FileStats {
+	stats := FileStats{
+		TotalFiles:  len(f.Files),
+		ByExtension: make(map[string]int),
+	}
+
+	for _, file := range f.Files {
+		stats.TotalSize += file.Size
+		stats.ByExtension[file.Extension]++
+		
+		if file.IsImage() {
+			stats.Images++
+		} else if file.IsVideo() {
+			stats.Videos++
+		} else if file.IsAudio() {
+			stats.Audio++
+		} else {
+			stats.Documents++
+		}
+	}
+
+	return stats
+}
+
 // IsDeleted returns true if the post is deleted
 func (p *Post) IsDeleted() bool {
 	return p.DeleteAt > 0
@@ -232,9 +347,10 @@ func (p *Post) CreatedTime() time.Time {
 
 // Messages represents all message data from Mattermost
 type Messages struct {
-	ExportedAt int64  `json:"exported_at"`
-	Version    string `json:"version"`
-	Posts      []Post `json:"posts"`
+	ExportedAt int64      `json:"exported_at"`
+	Version    string     `json:"version"`
+	Posts      []Post     `json:"posts"`
+	Files      []FileInfo `json:"files,omitempty"` // File attachments
 }
 
 // MessageStats holds statistics about messages

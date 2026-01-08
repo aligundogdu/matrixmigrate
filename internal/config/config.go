@@ -22,6 +22,25 @@ type MattermostConfig struct {
 	SSH        SSHConfig      `mapstructure:"ssh"`
 	ConfigPath string         `mapstructure:"config_path"` // Path to config.json on remote server
 	Database   DatabaseConfig `mapstructure:"database"`    // Optional: manual override
+	Files      FilesConfig    `mapstructure:"files"`       // File/attachment settings
+}
+
+// FilesConfig holds file attachment migration settings
+type FilesConfig struct {
+	// S3 public URL prefix for direct linking (e.g., "https://s3.example.com/bucket")
+	// If set, files will be linked directly instead of uploaded to Matrix
+	S3PublicURL string `mapstructure:"s3_public_url"`
+	
+	// Local data path on Mattermost server (e.g., "/opt/mattermost/data")
+	// Used for local file storage mode
+	LocalDataPath string `mapstructure:"local_data_path"`
+	
+	// Migration mode: "link" (keep S3 URLs), "upload" (upload to Matrix), "skip" (no files)
+	Mode string `mapstructure:"mode"`
+	
+	// Maximum file size to upload in MB (default: 50)
+	// Files larger than this will be linked instead of uploaded
+	MaxUploadSizeMB int `mapstructure:"max_upload_size_mb"`
 }
 
 // MatrixConfig holds Matrix server configuration
@@ -356,4 +375,49 @@ func (c *Config) GetHSToken() string {
 // UseAppService returns true if Application Service mode is enabled
 func (c *Config) UseAppService() bool {
 	return c.Matrix.AppService.Enabled && c.GetASToken() != ""
+}
+
+// GetFileMode returns the file migration mode (link, upload, or skip)
+func (c *Config) GetFileMode() string {
+	mode := c.Mattermost.Files.Mode
+	if mode == "" {
+		// Default: link if S3 URL is set, otherwise skip
+		if c.Mattermost.Files.S3PublicURL != "" {
+			return "link"
+		}
+		return "skip"
+	}
+	return mode
+}
+
+// GetFileURL returns the public URL for a file path
+// Returns empty string if no public URL is configured
+func (c *Config) GetFileURL(filePath string) string {
+	if c.Mattermost.Files.S3PublicURL == "" {
+		return ""
+	}
+	baseURL := strings.TrimSuffix(c.Mattermost.Files.S3PublicURL, "/")
+	return fmt.Sprintf("%s/%s", baseURL, filePath)
+}
+
+// GetMaxUploadSize returns the maximum file size for upload in bytes
+func (c *Config) GetMaxUploadSize() int64 {
+	maxMB := c.Mattermost.Files.MaxUploadSizeMB
+	if maxMB <= 0 {
+		maxMB = 50 // Default 50MB
+	}
+	return int64(maxMB) * 1024 * 1024
+}
+
+// ShouldUploadFile returns true if the file should be uploaded to Matrix
+func (c *Config) ShouldUploadFile(fileSize int64) bool {
+	mode := c.GetFileMode()
+	if mode == "skip" {
+		return false
+	}
+	if mode == "link" {
+		return false
+	}
+	// mode == "upload"
+	return fileSize <= c.GetMaxUploadSize()
 }

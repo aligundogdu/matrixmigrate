@@ -170,7 +170,7 @@ func FilterActiveMemberships(memberships *Memberships) *Memberships {
 	return filtered
 }
 
-// ExportMessages exports all messages (posts)
+// ExportMessages exports all messages (posts) and file attachments
 func (e *Exporter) ExportMessages(progress ExportProgressCallback) (*Messages, error) {
 	messages := &Messages{
 		ExportedAt: time.Now().UnixMilli(),
@@ -198,12 +198,33 @@ func (e *Exporter) ExportMessages(progress ExportProgressCallback) (*Messages, e
 		progress("messages", len(posts), totalCount)
 	}
 
+	// Export file infos
+	if progress != nil {
+		progress("files", 0, 0)
+	}
+	
+	files, err := e.client.GetFileInfos()
+	if err != nil {
+		// Non-fatal: continue without files
+		// Some Mattermost installations might not have files
+	} else {
+		messages.Files = files
+		if progress != nil {
+			progress("files", len(files), len(files))
+		}
+	}
+
 	return messages, nil
 }
 
 // GetMessageCount returns the total number of messages
 func (e *Exporter) GetMessageCount() (int, error) {
 	return e.client.GetPostCount()
+}
+
+// GetFileCount returns the total number of files
+func (e *Exporter) GetFileCount() (int, error) {
+	return e.client.GetFileInfoCount()
 }
 
 
