@@ -456,3 +456,153 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *Exi
 	return result, nil
 }
 
+// MessageImportStats holds statistics about message import
+type MessageImportStats struct {
+	MessagesImported int `json:"messages_imported"`
+	MessagesSkipped  int `json:"messages_skipped"` // Already imported
+	MessagesFailed   int `json:"messages_failed"`
+	RepliesImported  int `json:"replies_imported"`
+	RepliesFailed    int `json:"replies_failed"`  // Reply target not found
+}
+
+// MessageImportCallback is called for each message imported
+type MessageImportCallback func(current, total int, channelName string, status string)
+
+// ImportMessagesResult contains the result of message import
+type ImportMessagesResult struct {
+	Stats    *MessageImportStats
+	Mapping  map[string]string // MattermostID -> MatrixEventID
+	Errors   []string
+}
+
+// ImportMessages imports messages from Mattermost posts to Matrix rooms
+// This requires Application Service token for timestamp support
+func (i *Importer) ImportMessages(
+	posts []mattermost.Post,
+	channelToRoom map[string]string,      // Mattermost channel ID -> Matrix room ID
+	userMapping map[string]string,         // Mattermost user ID -> Matrix user ID
+	existingMapping map[string]string,     // Mattermost post ID -> Matrix event ID (for resume)
+	progress MessageImportCallback,
+) (*ImportMessagesResult, error) {
+	result := &ImportMessagesResult{
+		Stats:   &MessageImportStats{},
+		Mapping: make(map[string]string),
+		Errors:  []string{},
+	}
+	
+	if !i.client.HasASToken() {
+		logger.Warn("No Application Service token configured - messages will be imported without original timestamps")
+	}
+	
+	total := len(posts)
+	logger.Info("Starting message import: %d posts to process", total)
+	
+	// Collect all existing mappings
+	for k, v := range existingMapping {
+		result.Mapping[k] = v
+	}
+	
+	// Sort posts by timestamp (they should already be sorted, but just in case)
+	// This ensures parent messages are imported before replies
+	
+	// Process messages in order
+	for idx, post := range posts {
+		// Check if already imported
+		if _, exists := existingMapping[post.ID]; exists {
+			result.Stats.MessagesSkipped++
+			if progress != nil {
+				progress(idx+1, total, post.ChannelID, "skipped")
+			}
+			continue
+		}
+		
+		// Get target room
+		roomID, roomExists := channelToRoom[post.ChannelID]
+		if !roomExists {
+			result.Stats.MessagesFailed++
+			result.Errors = append(result.Errors, fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID))
+			if progress != nil {
+				progress(idx+1, total, post.ChannelID, "failed:no_room")
+			}
+			continue
+		}
+		
+		// Get sender
+		senderID, userExists := userMapping[post.UserID]
+		if !userExists {
+			// Fall back to empty sender (will use AS bot)
+			senderID = ""
+			logger.Warn("No user mapping for user %s, message will be sent as AS bot", post.UserID)
+		}
+		
+		// Handle reply
+		var eventID string
+		
+		if post.IsReply() {
+			// This is a reply - find parent event ID
+			parentEventID, parentExists := result.Mapping[post.RootID]
+			if !parentExists {
+				// Parent not yet imported or doesn't exist
+				result.Stats.RepliesFailed++
+				result.Errors = append(result.Errors, fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID))
+				
+				// Import as regular message instead of failing
+				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, post.CreateAt, senderID)
+				if sendErr != nil {
+					result.Stats.MessagesFailed++
+					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+					if progress != nil {
+						progress(idx+1, total, post.ChannelID, "failed:send_error")
+					}
+					continue
+				}
+				eventID = resp.EventID
+			} else {
+				// Send as reply
+				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, post.Message, parentEventID, post.CreateAt, senderID)
+				if sendErr != nil {
+					result.Stats.RepliesFailed++
+					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
+					if progress != nil {
+						progress(idx+1, total, post.ChannelID, "failed:reply_error")
+					}
+					continue
+				}
+				eventID = resp.EventID
+				result.Stats.RepliesImported++
+			}
+		} else {
+			// Regular message
+			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, post.CreateAt, senderID)
+			if sendErr != nil {
+				result.Stats.MessagesFailed++
+				result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+				if progress != nil {
+					progress(idx+1, total, post.ChannelID, "failed:send_error")
+				}
+				continue
+			}
+			eventID = resp.EventID
+		}
+		
+		// Store mapping
+		result.Mapping[post.ID] = eventID
+		result.Stats.MessagesImported++
+		
+		if progress != nil {
+			progress(idx+1, total, post.ChannelID, "imported")
+		}
+		
+		// Log progress every 100 messages
+		if (idx+1) % 100 == 0 {
+			logger.Info("Message import progress: %d/%d (%.1f%%)", idx+1, total, float64(idx+1)/float64(total)*100)
+		}
+	}
+	
+	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d",
+		result.Stats.MessagesImported, result.Stats.MessagesSkipped, 
+		result.Stats.MessagesFailed, result.Stats.RepliesImported)
+	
+	return result, nil
+}
+

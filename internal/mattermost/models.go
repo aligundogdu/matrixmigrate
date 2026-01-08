@@ -194,6 +194,85 @@ func (a *Assets) CalculateStats() ExportStats {
 	return stats
 }
 
+// Post represents a Mattermost message/post
+type Post struct {
+	ID        string `json:"id" db:"id"`
+	CreateAt  int64  `json:"create_at" db:"createat"`
+	UpdateAt  int64  `json:"update_at" db:"updateat"`
+	DeleteAt  int64  `json:"delete_at" db:"deleteat"`
+	UserID    string `json:"user_id" db:"userid"`
+	ChannelID string `json:"channel_id" db:"channelid"`
+	RootID    string `json:"root_id" db:"rootid"`       // Parent post ID for replies/threads
+	OriginalID string `json:"original_id" db:"originalid"` // Original post ID if edited
+	Message   string `json:"message" db:"message"`
+	Type      string `json:"type" db:"type"`           // "" for normal, "system_*" for system messages
+	Props     string `json:"props" db:"props"`         // JSON string with additional properties
+	FileIDs   string `json:"file_ids" db:"fileids"`    // JSON array of file IDs
+}
+
+// IsDeleted returns true if the post is deleted
+func (p *Post) IsDeleted() bool {
+	return p.DeleteAt > 0
+}
+
+// IsReply returns true if the post is a reply to another post
+func (p *Post) IsReply() bool {
+	return p.RootID != ""
+}
+
+// IsSystemMessage returns true if the post is a system-generated message
+func (p *Post) IsSystemMessage() bool {
+	return p.Type != "" && len(p.Type) > 0
+}
+
+// CreatedTime returns the creation time as time.Time
+func (p *Post) CreatedTime() time.Time {
+	return time.UnixMilli(p.CreateAt)
+}
+
+// Messages represents all message data from Mattermost
+type Messages struct {
+	ExportedAt int64  `json:"exported_at"`
+	Version    string `json:"version"`
+	Posts      []Post `json:"posts"`
+}
+
+// MessageStats holds statistics about messages
+type MessageStats struct {
+	TotalPosts    int            `json:"total_posts"`
+	ActivePosts   int            `json:"active_posts"`
+	DeletedPosts  int            `json:"deleted_posts"`
+	Replies       int            `json:"replies"`
+	SystemPosts   int            `json:"system_posts"`
+	ByChannel     map[string]int `json:"by_channel"`
+}
+
+// CalculateMessageStats calculates message statistics
+func (m *Messages) CalculateMessageStats() MessageStats {
+	stats := MessageStats{
+		TotalPosts: len(m.Posts),
+		ByChannel:  make(map[string]int),
+	}
+
+	for _, p := range m.Posts {
+		if p.IsDeleted() {
+			stats.DeletedPosts++
+			continue
+		}
+		stats.ActivePosts++
+		if p.IsReply() {
+			stats.Replies++
+		}
+		if p.IsSystemMessage() {
+			stats.SystemPosts++
+		}
+		stats.ByChannel[p.ChannelID]++
+	}
+
+	return stats
+}
+
+
 
 
 

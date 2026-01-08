@@ -710,3 +710,220 @@ func (o *Orchestrator) TestMatrixConnection() error {
 
 	return nil
 }
+
+// ExportMessagesResult contains the result of message export
+type ExportMessagesResult struct {
+	OutputFile       string
+	MessagesExported int
+}
+
+// ExportMessages exports all messages from Mattermost
+func (o *Orchestrator) ExportMessages(progress matrix.ImportProgressCallback) (*ExportMessagesResult, error) {
+	// Start step
+	o.state.StartStep(StepExportMessages)
+	if err := o.SaveState(); err != nil {
+		return nil, err
+	}
+
+	logger.Info("=== ExportMessages Started ===")
+
+	// Create exporter
+	exporter := mattermost.NewExporter(o.mmClient)
+
+	// Export messages
+	exportProgress := func(stage string, current, total int) {
+		if progress != nil {
+			progress(stage, current, total, "")
+		}
+		o.state.UpdateStepProgress(StepExportMessages, current, total)
+	}
+
+	messages, err := exporter.ExportMessages(exportProgress)
+	if err != nil {
+		o.state.FailStep(StepExportMessages, err)
+		o.SaveState()
+		return nil, fmt.Errorf("failed to export messages: %w", err)
+	}
+
+	logger.Info("Exported %d messages", len(messages.Posts))
+
+	// Save to compressed file
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("%s/mattermost-messages-%s.json.gz", o.config.Data.AssetsDir, timestamp)
+
+	if err := archive.SaveGzipJSON(filename, messages); err != nil {
+		o.state.FailStep(StepExportMessages, err)
+		o.SaveState()
+		return nil, fmt.Errorf("failed to save messages: %w", err)
+	}
+
+	logger.Success("Messages saved to %s", filename)
+
+	// Complete step
+	o.state.CompleteStep(StepExportMessages, filename)
+	if err := o.SaveState(); err != nil {
+		return nil, err
+	}
+
+	return &ExportMessagesResult{
+		OutputFile:       filename,
+		MessagesExported: len(messages.Posts),
+	}, nil
+}
+
+// ImportMessagesResult contains the result of message import
+type ImportMessagesResult struct {
+	MessagesImported int
+	MessagesSkipped  int
+	MessagesFailed   int
+	RepliesImported  int
+	RepliesFailed    int
+	MappingFile      string
+}
+
+// ImportMessages imports messages to Matrix
+func (o *Orchestrator) ImportMessages(progress matrix.MessageImportCallback) (*ImportMessagesResult, error) {
+	// Start step
+	o.state.StartStep(StepImportMessages)
+	if err := o.SaveState(); err != nil {
+		return nil, err
+	}
+
+	logger.Info("=== ImportMessages Started ===")
+
+	// Load exported messages
+	messagesFile := o.state.GetStepOutputFile(StepExportMessages)
+	if messagesFile == "" {
+		err := fmt.Errorf("no messages export file found")
+		o.state.FailStep(StepImportMessages, err)
+		o.SaveState()
+		return nil, err
+	}
+
+	var messages mattermost.Messages
+	if err := archive.LoadGzipJSON(messagesFile, &messages); err != nil {
+		o.state.FailStep(StepImportMessages, err)
+		o.SaveState()
+		return nil, fmt.Errorf("failed to load messages: %w", err)
+	}
+
+	logger.Info("Loaded %d messages from %s", len(messages.Posts), messagesFile)
+
+	// Load asset mapping for room and user mappings
+	assetMappingFile := o.state.GetStepOutputFile(StepImportAssets)
+	if assetMappingFile == "" {
+		err := fmt.Errorf("no asset mapping file found")
+		o.state.FailStep(StepImportMessages, err)
+		o.SaveState()
+		return nil, err
+	}
+
+	assetMapping, err := LoadMapping(assetMappingFile)
+	if err != nil {
+		o.state.FailStep(StepImportMessages, err)
+		o.SaveState()
+		return nil, fmt.Errorf("failed to load asset mapping: %w", err)
+	}
+
+	logger.Info("Loaded asset mapping: %d rooms, %d users", len(assetMapping.Channels), len(assetMapping.Users))
+
+	// Load or create message mapping for resume support
+	msgMappingFile, _ := GetLatestMessageMappingFile(o.config.Data.MappingsDir)
+	var msgMapping *MessageMapping
+	
+	if msgMappingFile != "" {
+		msgMapping, err = LoadMessageMapping(msgMappingFile)
+		if err != nil {
+			logger.Warn("Failed to load existing message mapping, starting fresh: %v", err)
+			msgMapping = NewMessageMapping(o.config.Matrix.Homeserver)
+		} else {
+			logger.Info("Resuming from existing mapping with %d messages", msgMapping.Count())
+		}
+	} else {
+		msgMapping = NewMessageMapping(o.config.Matrix.Homeserver)
+	}
+
+	// Set up AS token if configured
+	if o.config.UseAppService() {
+		o.mxClient.SetASToken(o.config.GetASToken())
+		logger.Info("Application Service token configured - messages will have original timestamps")
+	} else {
+		logger.Warn("No Application Service token - messages will be imported with current timestamps")
+	}
+
+	// Create importer
+	importer := matrix.NewImporter(o.mxClient)
+
+	// Convert existing mapping to simple map
+	existingMapping := make(map[string]string)
+	for mmID, entry := range msgMapping.Messages {
+		existingMapping[mmID] = entry.MatrixEventID
+	}
+
+	// Import messages
+	result, err := importer.ImportMessages(
+		messages.Posts,
+		assetMapping.Channels,  // channelID -> roomID
+		assetMapping.Users,     // userID -> matrixUserID
+		existingMapping,        // existing message mapping
+		progress,
+	)
+	if err != nil {
+		o.state.FailStep(StepImportMessages, err)
+		o.SaveState()
+		return nil, fmt.Errorf("failed to import messages: %w", err)
+	}
+
+	// Update message mapping with new imports
+	for mmID, mxEventID := range result.Mapping {
+		if _, exists := msgMapping.Messages[mmID]; !exists {
+			// Find the post to get additional info
+			for _, post := range messages.Posts {
+				if post.ID == mmID {
+					msgMapping.AddMessage(&MessageMapEntry{
+						MattermostID:  mmID,
+						MatrixEventID: mxEventID,
+						ChannelID:     post.ChannelID,
+						RoomID:        assetMapping.Channels[post.ChannelID],
+						UserID:        post.UserID,
+						MatrixUserID:  assetMapping.Users[post.UserID],
+						Timestamp:     post.CreateAt,
+						IsReply:       post.IsReply(),
+						RootID:        post.RootID,
+					})
+					break
+				}
+			}
+		}
+	}
+
+	// Save message mapping
+	newMappingFile := GenerateMessageMappingFilename(o.config.Data.MappingsDir)
+	if err := SaveMessageMapping(msgMapping, newMappingFile); err != nil {
+		logger.Warn("Failed to save message mapping: %v", err)
+	} else {
+		logger.Info("Message mapping saved to %s", newMappingFile)
+	}
+
+	logger.Info("=== ImportMessages Completed ===")
+	logger.Info("Messages: imported=%d, skipped=%d, failed=%d",
+		result.Stats.MessagesImported, result.Stats.MessagesSkipped, result.Stats.MessagesFailed)
+	logger.Info("Replies: imported=%d, failed=%d",
+		result.Stats.RepliesImported, result.Stats.RepliesFailed)
+	logger.Success("Message import completed successfully")
+
+	// Complete step
+	o.state.CompleteStep(StepImportMessages, newMappingFile)
+	if err := o.SaveState(); err != nil {
+		return nil, err
+	}
+
+	return &ImportMessagesResult{
+		MessagesImported: result.Stats.MessagesImported,
+		MessagesSkipped:  result.Stats.MessagesSkipped,
+		MessagesFailed:   result.Stats.MessagesFailed,
+		RepliesImported:  result.Stats.RepliesImported,
+		RepliesFailed:    result.Stats.RepliesFailed,
+		MappingFile:      newMappingFile,
+	}, nil
+}

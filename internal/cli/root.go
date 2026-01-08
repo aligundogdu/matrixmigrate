@@ -140,6 +140,11 @@ func printInfo(format string, args ...interface{}) {
 	fmt.Printf("ℹ "+format+"\n", args...)
 }
 
+// printWarning prints a warning message
+func printWarning(format string, args ...interface{}) {
+	fmt.Printf("⚠ "+format+"\n", args...)
+}
+
 // printProgress prints a progress message
 func printProgress(format string, args ...interface{}) {
 	if verbose {

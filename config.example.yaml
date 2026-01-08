@@ -81,6 +81,20 @@ matrix:
     # Actual delay: base_delay * 2^retry_count (e.g., 2s, 4s, 8s, 16s, 32s)
     # Default: 2000 (2 seconds)
     retry_base_delay_ms: 2000
+  
+  # Application Service configuration (required for message import with timestamps)
+  # See appservice-registration.example.yaml for setup instructions
+  appservice:
+    # Enable Application Service mode for message import
+    # This allows importing messages with their original timestamps
+    enabled: false
+    
+    # Environment variable containing the AS token
+    # Generate with: openssl rand -hex 32
+    as_token_env: "MATRIX_AS_TOKEN"
+    
+    # Environment variable containing the HS token (optional)
+    # hs_token_env: "MATRIX_HS_TOKEN"
 
 # Data storage paths
 data:

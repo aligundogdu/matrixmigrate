@@ -270,6 +270,135 @@ func (c *Client) GetChannelCount() (int, error) {
 	return count, err
 }
 
+// GetPosts retrieves all posts from the database (excluding deleted and system messages)
+func (c *Client) GetPosts() ([]Post, error) {
+	query := `
+		SELECT 
+			id, createat, updateat, deleteat, userid, channelid,
+			COALESCE(rootid, '') as rootid,
+			COALESCE(originalid, '') as originalid,
+			COALESCE(message, '') as message,
+			COALESCE(type, '') as type,
+			COALESCE(props, '{}') as props,
+			COALESCE(fileids, '[]') as fileids
+		FROM posts
+		WHERE deleteat = 0
+		AND (type = '' OR type IS NULL)
+		ORDER BY createat ASC
+	`
+
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query posts: %w", err)
+	}
+	defer rows.Close()
+
+	var posts []Post
+	for rows.Next() {
+		var p Post
+		err := rows.Scan(
+			&p.ID, &p.CreateAt, &p.UpdateAt, &p.DeleteAt,
+			&p.UserID, &p.ChannelID, &p.RootID, &p.OriginalID,
+			&p.Message, &p.Type, &p.Props, &p.FileIDs,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan post: %w", err)
+		}
+		posts = append(posts, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating posts: %w", err)
+	}
+
+	return posts, nil
+}
+
+// GetPostsByChannel retrieves posts for a specific channel
+func (c *Client) GetPostsByChannel(channelID string) ([]Post, error) {
+	query := `
+		SELECT 
+			id, createat, updateat, deleteat, userid, channelid,
+			COALESCE(rootid, '') as rootid,
+			COALESCE(originalid, '') as originalid,
+			COALESCE(message, '') as message,
+			COALESCE(type, '') as type,
+			COALESCE(props, '{}') as props,
+			COALESCE(fileids, '[]') as fileids
+		FROM posts
+		WHERE channelid = $1
+		AND deleteat = 0
+		AND (type = '' OR type IS NULL)
+		ORDER BY createat ASC
+	`
+
+	rows, err := c.db.Query(query, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query posts for channel %s: %w", channelID, err)
+	}
+	defer rows.Close()
+
+	var posts []Post
+	for rows.Next() {
+		var p Post
+		err := rows.Scan(
+			&p.ID, &p.CreateAt, &p.UpdateAt, &p.DeleteAt,
+			&p.UserID, &p.ChannelID, &p.RootID, &p.OriginalID,
+			&p.Message, &p.Type, &p.Props, &p.FileIDs,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan post: %w", err)
+		}
+		posts = append(posts, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating posts: %w", err)
+	}
+
+	return posts, nil
+}
+
+// GetPostCount returns the total number of active posts
+func (c *Client) GetPostCount() (int, error) {
+	var count int
+	err := c.db.QueryRow(`
+		SELECT COUNT(*) FROM posts 
+		WHERE deleteat = 0 
+		AND (type = '' OR type IS NULL)
+	`).Scan(&count)
+	return count, err
+}
+
+// GetPostCountByChannel returns post counts per channel
+func (c *Client) GetPostCountByChannel() (map[string]int, error) {
+	query := `
+		SELECT channelid, COUNT(*) as cnt
+		FROM posts
+		WHERE deleteat = 0
+		AND (type = '' OR type IS NULL)
+		GROUP BY channelid
+	`
+
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query post counts: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var channelID string
+		var count int
+		if err := rows.Scan(&channelID, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan count: %w", err)
+		}
+		counts[channelID] = count
+	}
+
+	return counts, nil
+}
+
 
 
 

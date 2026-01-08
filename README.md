@@ -116,6 +116,8 @@ matrix:
 ./matrixmigrate import assets
 ./matrixmigrate export memberships
 ./matrixmigrate import memberships
+./matrixmigrate export messages
+./matrixmigrate import messages
 
 # Run with specific config
 ./matrixmigrate --config ./config.yaml export assets
@@ -169,6 +171,8 @@ The connection test provides detailed step-by-step diagnostics:
 | 1b | `import assets` | Create users, spaces, rooms in Matrix |
 | 2a | `export memberships` | Export team/channel memberships from Mattermost |
 | 2b | `import memberships` | Apply memberships in Matrix |
+| 3a | `export messages` | Export all messages from Mattermost |
+| 3b | `import messages` | Import messages to Matrix rooms (requires Application Service for timestamps) |
 
 ## Architecture
 
@@ -213,6 +217,7 @@ The connection test provides detailed step-by-step diagnostics:
 |----------|-------------|----------|
 | `MATRIX_ADMIN_PASSWORD` | Matrix admin password for login | Yes (if using auth) |
 | `MATRIX_ADMIN_TOKEN` | Alternative: existing admin token | No |
+| `MATRIX_AS_TOKEN` | Application Service token for message import | Yes (for messages) |
 | `MM_SSH_PASSWORD` | Mattermost SSH password | No (if using key) |
 | `MX_SSH_PASSWORD` | Matrix SSH password | No (if using key) |
 | `SSH_KEY_PASSPHRASE` | SSH key passphrase (if encrypted) | No |
@@ -298,6 +303,156 @@ The migration tool is designed to be **resumable**:
 - Repeat until all items are successfully imported
 
 This is normal behavior and the tool will eventually complete all imports.
+
+## Application Service Setup (for Message Import)
+
+To import messages with their **original timestamps**, you need to configure an Application Service (AS) on your Synapse server. Without AS, messages will be imported with the current timestamp.
+
+### Step 1: Generate Tokens
+
+```bash
+# Generate AS token
+openssl rand -hex 32
+# Example output: a1b2c3d4e5f6...
+
+# Generate HS token
+openssl rand -hex 32
+# Example output: 9z8y7x6w5v4u...
+```
+
+### Step 2: Create Registration File
+
+Create a file on your Synapse server (e.g., `/etc/matrix-synapse/matrixmigrate.yaml`):
+
+```yaml
+id: matrixmigrate
+url: null  # No callback URL needed - outbound only
+as_token: "YOUR_GENERATED_AS_TOKEN"
+hs_token: "YOUR_GENERATED_HS_TOKEN"
+sender_localpart: matrixmigrate
+rate_limited: false  # Disable rate limiting for AS
+namespaces:
+  users: []
+  rooms: []
+  aliases: []
+```
+
+### Step 3: Register with Synapse
+
+Add to your `homeserver.yaml`:
+
+```yaml
+app_service_config_files:
+  - /etc/matrix-synapse/matrixmigrate.yaml
+```
+
+Then restart Synapse:
+
+```bash
+systemctl restart matrix-synapse
+```
+
+### Step 4: Configure MatrixMigrate
+
+Add to your `config.yaml`:
+
+```yaml
+matrix:
+  appservice:
+    enabled: true
+    as_token_env: "MATRIX_AS_TOKEN"
+```
+
+Set the environment variable:
+
+```bash
+export MATRIX_AS_TOKEN="YOUR_GENERATED_AS_TOKEN"
+```
+
+### Step 5: Import Messages
+
+```bash
+./matrixmigrate import messages
+```
+
+**Note:** The AS token allows the migration tool to send messages on behalf of users with their original timestamps. This is the only way to preserve message history accurately.
+
+---
+
+## Application Service Kurulumu (Mesaj Aktarımı için)
+
+Mesajları **orijinal zaman damgalarıyla** aktarmak için Synapse sunucunuzda bir Application Service (AS) yapılandırmanız gerekir. AS olmadan mesajlar mevcut zaman damgasıyla aktarılır.
+
+### Adım 1: Token'ları Oluşturun
+
+```bash
+# AS token oluştur
+openssl rand -hex 32
+# Örnek çıktı: a1b2c3d4e5f6...
+
+# HS token oluştur
+openssl rand -hex 32
+# Örnek çıktı: 9z8y7x6w5v4u...
+```
+
+### Adım 2: Registration Dosyası Oluşturun
+
+Synapse sunucunuzda bir dosya oluşturun (örn. `/etc/matrix-synapse/matrixmigrate.yaml`):
+
+```yaml
+id: matrixmigrate
+url: null  # Callback URL gerekli değil - sadece giden
+as_token: "OLUŞTURDUĞUNUZ_AS_TOKEN"
+hs_token: "OLUŞTURDUĞUNUZ_HS_TOKEN"
+sender_localpart: matrixmigrate
+rate_limited: false  # AS için hız sınırlamasını devre dışı bırak
+namespaces:
+  users: []
+  rooms: []
+  aliases: []
+```
+
+### Adım 3: Synapse'e Kaydedin
+
+`homeserver.yaml` dosyanıza ekleyin:
+
+```yaml
+app_service_config_files:
+  - /etc/matrix-synapse/matrixmigrate.yaml
+```
+
+Ardından Synapse'i yeniden başlatın:
+
+```bash
+systemctl restart matrix-synapse
+```
+
+### Adım 4: MatrixMigrate'i Yapılandırın
+
+`config.yaml` dosyanıza ekleyin:
+
+```yaml
+matrix:
+  appservice:
+    enabled: true
+    as_token_env: "MATRIX_AS_TOKEN"
+```
+
+Ortam değişkenini ayarlayın:
+
+```bash
+export MATRIX_AS_TOKEN="OLUŞTURDUĞUNUZ_AS_TOKEN"
+```
+
+### Adım 5: Mesajları Aktarın
+
+```bash
+./matrixmigrate import messages
+```
+
+**Not:** AS token'ı, migrasyon aracının kullanıcılar adına orijinal zaman damgalarıyla mesaj göndermesini sağlar. Mesaj geçmişini doğru şekilde korumak için tek yol budur.
+
+---
 
 ## Troubleshooting
 
@@ -446,6 +601,8 @@ matrix:
 ./matrixmigrate import assets
 ./matrixmigrate export memberships
 ./matrixmigrate import memberships
+./matrixmigrate export messages
+./matrixmigrate import messages
 
 # Belirli config ile çalıştır
 ./matrixmigrate --config ./config.yaml export assets
@@ -499,6 +656,8 @@ Bağlantı testi detaylı adım adım tanılama sağlar:
 | 1b | `import assets` | Matrix'te kullanıcıları, space'leri, odaları oluştur |
 | 2a | `export memberships` | Mattermost'tan takım/kanal üyeliklerini dışa aktar |
 | 2b | `import memberships` | Matrix'te üyelikleri uygula |
+| 3a | `export messages` | Mattermost'tan tüm mesajları dışa aktar |
+| 3b | `import messages` | Mesajları Matrix odalarına aktar (zaman damgaları için Application Service gerektirir) |
 
 ## Mimari
 
@@ -543,6 +702,7 @@ Bağlantı testi detaylı adım adım tanılama sağlar:
 |----------|----------|---------|
 | `MATRIX_ADMIN_PASSWORD` | Giriş için Matrix admin şifresi | Evet (auth kullanılıyorsa) |
 | `MATRIX_ADMIN_TOKEN` | Alternatif: mevcut admin token | Hayır |
+| `MATRIX_AS_TOKEN` | Mesaj aktarımı için Application Service token | Evet (mesajlar için) |
 | `MM_SSH_PASSWORD` | Mattermost SSH şifresi | Hayır (anahtar kullanılıyorsa) |
 | `MX_SSH_PASSWORD` | Matrix SSH şifresi | Hayır (anahtar kullanılıyorsa) |
 | `SSH_KEY_PASSPHRASE` | SSH anahtar parolası (şifreli ise) | Hayır |

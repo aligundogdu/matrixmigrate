@@ -26,11 +26,19 @@ type MattermostConfig struct {
 
 // MatrixConfig holds Matrix server configuration
 type MatrixConfig struct {
-	SSH        SSHConfig       `mapstructure:"ssh"`
-	API        APIConfig       `mapstructure:"api"`
-	Auth       AuthConfig      `mapstructure:"auth"` // Username/password auth for Matrix API
-	Homeserver string          `mapstructure:"homeserver"`
-	RateLimit  RateLimitConfig `mapstructure:"rate_limit"` // Rate limiting configuration
+	SSH        SSHConfig        `mapstructure:"ssh"`
+	API        APIConfig        `mapstructure:"api"`
+	Auth       AuthConfig       `mapstructure:"auth"`       // Username/password auth for Matrix API
+	Homeserver string           `mapstructure:"homeserver"`
+	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`  // Rate limiting configuration
+	AppService AppServiceConfig `mapstructure:"appservice"`  // Application Service for message import
+}
+
+// AppServiceConfig holds Application Service configuration for message import
+type AppServiceConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`       // Enable AS mode for message import
+	ASTokenEnv string `mapstructure:"as_token_env"`  // Env var for AS token
+	HSTokenEnv string `mapstructure:"hs_token_env"`  // Env var for HS token (optional)
 }
 
 // RateLimitConfig holds rate limiting configuration for Matrix API
@@ -327,4 +335,25 @@ func (c *Config) MatrixAPIURL() string {
 // FormatUserID formats a username as a Matrix user ID
 func (c *Config) FormatUserID(username string) string {
 	return fmt.Sprintf("@%s:%s", username, c.Matrix.Homeserver)
+}
+
+// GetASToken returns the Application Service token from environment
+func (c *Config) GetASToken() string {
+	if c.Matrix.AppService.ASTokenEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.Matrix.AppService.ASTokenEnv)
+}
+
+// GetHSToken returns the Homeserver token from environment
+func (c *Config) GetHSToken() string {
+	if c.Matrix.AppService.HSTokenEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.Matrix.AppService.HSTokenEnv)
+}
+
+// UseAppService returns true if Application Service mode is enabled
+func (c *Config) UseAppService() bool {
+	return c.Matrix.AppService.Enabled && c.GetASToken() != ""
 }

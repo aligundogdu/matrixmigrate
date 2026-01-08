@@ -1,0 +1,30 @@
+# MatrixMigrate Application Service Registration
+# 
+# This file must be registered with your Synapse homeserver to enable
+# message import with original timestamps.
+#
+# Steps:
+# 1. Generate tokens (you can use: openssl rand -hex 32)
+# 2. Copy this file to your Synapse server (e.g., /etc/matrix-synapse/matrixmigrate.yaml)
+# 3. Add to homeserver.yaml: app_service_config_files: ["/etc/matrix-synapse/matrixmigrate.yaml"]
+# 4. Restart Synapse
+# 5. Add the as_token to your MatrixMigrate config.yaml
+
+id: matrixmigrate
+url: null  # No callback URL needed - this is outbound-only
+
+# Generate these tokens with: openssl rand -hex 32
+as_token: "REPLACE_WITH_GENERATED_TOKEN"
+hs_token: "REPLACE_WITH_GENERATED_TOKEN"
+
+# The localpart of the user the AS will masquerade as
+sender_localpart: matrixmigrate
+
+# Rate limiting is disabled for application services by default
+rate_limited: false
+
+# We don't need to reserve any namespaces since we're just sending messages
+namespaces:
+  users: []
+  rooms: []
+  aliases: []

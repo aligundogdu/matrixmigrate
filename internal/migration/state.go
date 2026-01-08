@@ -27,6 +27,8 @@ const (
 	StepImportAssets       StepName = "import_assets"
 	StepExportMemberships  StepName = "export_memberships"
 	StepImportMemberships  StepName = "import_memberships"
+	StepExportMessages     StepName = "export_messages"
+	StepImportMessages     StepName = "import_messages"
 )
 
 // StepState represents the state of a single migration step
@@ -147,6 +149,24 @@ func (s *MigrationState) CanRunStep(name StepName) (bool, string) {
 			return false, "export_memberships must be completed first"
 		}
 		return true, ""
+	case StepExportMessages:
+		// Requires export_assets to be completed (for channel list)
+		exportStep := s.GetStep(StepExportAssets)
+		if exportStep.Status != StatusCompleted {
+			return false, "export_assets must be completed first"
+		}
+		return true, ""
+	case StepImportMessages:
+		// Requires export_messages and import_assets to be completed
+		exportMsgStep := s.GetStep(StepExportMessages)
+		if exportMsgStep.Status != StatusCompleted {
+			return false, "export_messages must be completed first"
+		}
+		importAssetsStep := s.GetStep(StepImportAssets)
+		if importAssetsStep.Status != StatusCompleted {
+			return false, "import_assets must be completed first (for room and user mappings)"
+		}
+		return true, ""
 	}
 	return false, "unknown step"
 }
@@ -164,6 +184,8 @@ func (s *MigrationState) IsComplete() bool {
 		StepImportAssets,
 		StepExportMemberships,
 		StepImportMemberships,
+		StepExportMessages,
+		StepImportMessages,
 	}
 
 	for _, name := range requiredSteps {

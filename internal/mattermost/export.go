@@ -170,6 +170,42 @@ func FilterActiveMemberships(memberships *Memberships) *Memberships {
 	return filtered
 }
 
+// ExportMessages exports all messages (posts)
+func (e *Exporter) ExportMessages(progress ExportProgressCallback) (*Messages, error) {
+	messages := &Messages{
+		ExportedAt: time.Now().UnixMilli(),
+		Version:    "1.0",
+	}
+
+	// Get total count first
+	totalCount, err := e.client.GetPostCount()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get post count: %w", err)
+	}
+
+	if progress != nil {
+		progress("messages", 0, totalCount)
+	}
+
+	// Export posts
+	posts, err := e.client.GetPosts()
+	if err != nil {
+		return nil, fmt.Errorf("failed to export posts: %w", err)
+	}
+	messages.Posts = posts
+
+	if progress != nil {
+		progress("messages", len(posts), totalCount)
+	}
+
+	return messages, nil
+}
+
+// GetMessageCount returns the total number of messages
+func (e *Exporter) GetMessageCount() (int, error) {
+	return e.client.GetPostCount()
+}
+
 
 
 
