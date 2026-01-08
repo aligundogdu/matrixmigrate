@@ -287,6 +287,18 @@ rc_room_creation:
 
 **⚠️ Important:** Remember to restart Synapse (`systemctl restart matrix-synapse`) and **re-enable rate limiting** after the migration is complete for security!
 
+### ⚠️ Important Notice About Rate Limiting
+
+Even if you configure all rate limit bypass settings, **some items may still fail to import** due to rate limiting or temporary network issues. **Don't panic!**
+
+The migration tool is designed to be **resumable**:
+- Already imported users, spaces, and rooms are tracked in the mapping file
+- When you run the import command again, it will **skip already imported items** and only process the failed ones
+- Simply wait a few minutes and run the same import command again
+- Repeat until all items are successfully imported
+
+This is normal behavior and the tool will eventually complete all imports.
+
 ## Troubleshooting
 
 Use `./matrixmigrate test all` to identify exactly where the connection fails.
@@ -605,6 +617,18 @@ rc_room_creation:
 
 
 **⚠️ Önemli:** Synapse'i yeniden başlatmayı (`systemctl restart matrix-synapse`) ve güvenlik için migrasyon tamamlandıktan sonra **hız sınırlamayı tekrar etkinleştirmeyi** unutmayın!
+
+### ⚠️ Hız Sınırlaması Hakkında Önemli Uyarı
+
+Tüm hız sınırı bypass ayarlarını yapılandırsanız bile, hız sınırlaması veya geçici ağ sorunları nedeniyle **bazı öğeler aktarılamayabilir**. **Panik yapmayın!**
+
+Migrasyon aracı **devam ettirilebilir** olarak tasarlanmıştır:
+- Zaten aktarılmış kullanıcılar, space'ler ve odalar mapping dosyasında takip edilir
+- Import komutunu tekrar çalıştırdığınızda, **zaten aktarılmış öğeleri atlayacak** ve sadece başarısız olanları işleyecektir
+- Birkaç dakika bekleyin ve aynı import komutunu tekrar çalıştırın
+- Tüm öğeler başarıyla aktarılana kadar tekrarlayın
+
+Bu normal bir davranıştır ve araç sonunda tüm aktarımları tamamlayacaktır.
 
 ## Sorun Giderme
 
