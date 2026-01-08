@@ -10,6 +10,7 @@ import (
 	"github.com/aligundogdu/matrixmigrate/internal/config"
 	"github.com/aligundogdu/matrixmigrate/internal/i18n"
 	"github.com/aligundogdu/matrixmigrate/internal/migration"
+	"github.com/aligundogdu/matrixmigrate/internal/version"
 )
 
 // View represents different screens in the app
@@ -332,6 +333,7 @@ func (m Model) renderMenu() string {
                                         |___/                   `)
 
 	subtitle := SubtitleStyle.Render(locale.App.Description)
+	versionInfo := HelpStyle.Render("v" + version.GetFullVersion())
 
 	// Menu items
 	var menuContent string
@@ -363,6 +365,7 @@ func (m Model) renderMenu() string {
 		lipgloss.Left,
 		header,
 		subtitle,
+		versionInfo,
 		"",
 		BoxStyle.Render(TitleStyle.Render(locale.Menu.Title)+"\n\n"+menuContent),
 		help,

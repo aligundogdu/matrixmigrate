@@ -9,6 +9,7 @@ import (
 	"github.com/aligundogdu/matrixmigrate/internal/config"
 	"github.com/aligundogdu/matrixmigrate/internal/i18n"
 	"github.com/aligundogdu/matrixmigrate/internal/tui"
+	"github.com/aligundogdu/matrixmigrate/internal/version"
 )
 
 var (
@@ -19,8 +20,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "matrixmigrate",
-	Short: "Mattermost to Matrix migration tool",
+	Use:     "matrixmigrate",
+	Short:   "Mattermost to Matrix migration tool",
+	Version: version.GetFullVersion(),
 	Long: `MatrixMigrate is a CLI tool for migrating from Mattermost to Matrix Synapse.
 
 It supports multi-step migration with resumable checkpoints, SSH tunnel connections,
@@ -97,6 +99,16 @@ func init() {
 	rootCmd.AddCommand(importCmd)
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(versionCmd)
+}
+
+// versionCmd shows detailed version information
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show detailed version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(version.GetBuildInfo())
+	},
 }
 
 // loadConfig is a helper to load config for subcommands
