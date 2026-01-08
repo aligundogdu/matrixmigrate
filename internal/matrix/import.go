@@ -189,8 +189,8 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existing
 			continue
 		}
 
-		// Skip direct messages and group messages
-		if channel.IsDirect() || channel.IsGroup() {
+		// Skip direct messages (2-person DMs)
+		if channel.IsDirect() {
 			stats.RoomsSkipped++
 			continue
 		}

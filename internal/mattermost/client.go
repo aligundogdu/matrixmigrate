@@ -144,7 +144,7 @@ func (c *Client) GetChannels() ([]Channel, error) {
 			COALESCE(creatorid, '') as creatorid,
 			COALESCE(totalmsgcount, 0) as totalmsgcount
 		FROM channels
-		WHERE type IN ('O', 'P')
+		WHERE type IN ('O', 'P', 'G')
 		ORDER BY createat ASC
 	`
 
@@ -263,10 +263,10 @@ func (c *Client) GetTeamCount() (int, error) {
 	return count, err
 }
 
-// GetChannelCount returns the total number of channels (public and private only)
+// GetChannelCount returns the total number of channels (public, private, and group)
 func (c *Client) GetChannelCount() (int, error) {
 	var count int
-	err := c.db.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('O', 'P')").Scan(&count)
+	err := c.db.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('O', 'P', 'G')").Scan(&count)
 	return count, err
 }
 
