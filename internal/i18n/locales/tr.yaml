@@ -9,6 +9,8 @@ menu:
   import_assets: "Varlıkları İçe Aktar"
   export_memberships: "Üyelikleri Dışa Aktar"
   import_memberships: "Üyelikleri İçe Aktar"
+  export_messages: "Mesajları Dışa Aktar"
+  import_messages: "Mesajları İçe Aktar"
   test_connection: "Bağlantı Testi"
   test_mattermost: "Mattermost Bağlantısını Test Et"
   test_matrix: "Matrix Bağlantısını Test Et"

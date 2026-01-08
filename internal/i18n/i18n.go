@@ -38,6 +38,8 @@ type MenuStrings struct {
 	ImportAssets      string `yaml:"import_assets"`
 	ExportMemberships string `yaml:"export_memberships"`
 	ImportMemberships string `yaml:"import_memberships"`
+	ExportMessages    string `yaml:"export_messages"`
+	ImportMessages    string `yaml:"import_messages"`
 	TestConnection    string `yaml:"test_connection"`
 	TestMattermost    string `yaml:"test_mattermost"`
 	TestMatrix        string `yaml:"test_matrix"`

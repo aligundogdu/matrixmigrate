@@ -9,6 +9,8 @@ menu:
   import_assets: "Import Assets"
   export_memberships: "Export Memberships"
   import_memberships: "Import Memberships"
+  export_messages: "Export Messages"
+  import_messages: "Import Messages"
   test_connection: "Test Connection"
   test_mattermost: "Test Mattermost Connection"
   test_matrix: "Test Matrix Connection"

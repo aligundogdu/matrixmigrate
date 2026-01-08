@@ -22,6 +22,8 @@ const (
 	ViewImportAssets
 	ViewExportMemberships
 	ViewImportMemberships
+	ViewExportMessages
+	ViewImportMessages
 	ViewTestConnection
 	ViewStatus
 	ViewSettings
@@ -121,6 +123,8 @@ func (m *Model) createMenuItems() []MenuItem {
 	canImportAssets, _ := state.CanRunStep(migration.StepImportAssets)
 	canExportMemberships, _ := state.CanRunStep(migration.StepExportMemberships)
 	canImportMemberships, _ := state.CanRunStep(migration.StepImportMemberships)
+	canExportMessages, _ := state.CanRunStep(migration.StepExportMessages)
+	canImportMessages, _ := state.CanRunStep(migration.StepImportMessages)
 
 	return []MenuItem{
 		{
@@ -146,6 +150,18 @@ func (m *Model) createMenuItems() []MenuItem {
 			Desc:     "Apply memberships in Matrix",
 			View:     ViewImportMemberships,
 			Disabled: !canImportMemberships,
+		},
+		{
+			Title:    locale.Menu.ExportMessages,
+			Desc:     "Export all messages and files from Mattermost",
+			View:     ViewExportMessages,
+			Disabled: !canExportMessages,
+		},
+		{
+			Title:    locale.Menu.ImportMessages,
+			Desc:     "Import messages to Matrix rooms",
+			View:     ViewImportMessages,
+			Disabled: !canImportMessages,
 		},
 		{
 			Title: locale.Menu.TestConnection,
@@ -284,6 +300,10 @@ func (m *Model) handleViewChange(view View) tea.Cmd {
 		return m.runExportMemberships()
 	case ViewImportMemberships:
 		return m.runImportMemberships()
+	case ViewExportMessages:
+		return m.runExportMessages()
+	case ViewImportMessages:
+		return m.runImportMessages()
 	case ViewTestConnection:
 		return m.runTestConnection()
 	case ViewStatus:
@@ -312,7 +332,7 @@ func (m Model) View() string {
 		return m.renderSuccess()
 	case ViewTestConnection:
 		return m.renderTestConnection()
-	case ViewExportAssets, ViewImportAssets, ViewExportMemberships, ViewImportMemberships:
+	case ViewExportAssets, ViewImportAssets, ViewExportMemberships, ViewImportMemberships, ViewExportMessages, ViewImportMessages:
 		return m.renderProgress()
 	default:
 		return m.renderMenu()
@@ -389,6 +409,10 @@ func (m Model) renderProgress() string {
 		title = locale.Menu.ExportMemberships
 	case ViewImportMemberships:
 		title = locale.Menu.ImportMemberships
+	case ViewExportMessages:
+		title = locale.Menu.ExportMessages
+	case ViewImportMessages:
+		title = locale.Menu.ImportMessages
 	case ViewTestConnection:
 		title = locale.Menu.TestConnection
 	default:
@@ -854,6 +878,57 @@ func (m *Model) runImportMemberships() tea.Cmd {
 		}
 
 		return operationCompleteMsg{message: "Memberships imported successfully!", result: result}
+	}
+}
+
+func (m *Model) runExportMessages() tea.Cmd {
+	return func() tea.Msg {
+		sendProgress("Connecting to Mattermost...", 0, 0, "")
+
+		// Connect if not already
+		if err := m.orchestrator.ConnectMattermost(); err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		sendProgress("Exporting messages...", 0, 0, "")
+
+		progress := func(stage string, current, total int, item string) {
+			sendProgress(stage, current, total, item)
+		}
+
+		result, err := m.orchestrator.ExportMessages(progress)
+		if err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		msg := fmt.Sprintf("Messages exported: %d messages, %d files", result.MessagesExported, result.FilesExported)
+		return operationCompleteMsg{message: msg}
+	}
+}
+
+func (m *Model) runImportMessages() tea.Cmd {
+	return func() tea.Msg {
+		sendProgress("Connecting to Matrix...", 0, 0, "")
+
+		// Connect if not already
+		if err := m.orchestrator.ConnectMatrix(); err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		sendProgress("Importing messages...", 0, 0, "")
+
+		progress := func(current, total int, channelName, status string) {
+			sendProgress(fmt.Sprintf("Messages: %s", status), current, total, channelName)
+		}
+
+		result, err := m.orchestrator.ImportMessages(progress)
+		if err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		msg := fmt.Sprintf("Messages imported: %d imported, %d skipped, %d failed, %d files linked",
+			result.MessagesImported, result.MessagesSkipped, result.MessagesFailed, result.FilesLinked)
+		return operationCompleteMsg{message: msg}
 	}
 }
 
