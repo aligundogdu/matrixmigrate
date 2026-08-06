@@ -223,8 +223,13 @@ func (i *Importer) ImportChannelsAsRoomsWithDMs(channels []mattermost.Channel, u
 		}
 
 		// Create room
-		topic := channel.Purpose
-		if topic == "" {
+		topic := ""
+
+		if channel.Purpose != "" && channel.Header != "" {
+			topic = channel.Purpose + " " + channel.Header
+		} else if channel.Purpose != "" {
+			topic = channel.Purpose
+		} else if channel.Header != "" {
 			topic = channel.Header
 		}
 
@@ -311,8 +316,14 @@ func (i *Importer) importDMAsRoom(channel mattermost.Channel, userMapping map[st
 		)
 	}
 
-	topic := channel.Purpose
-	if topic == "" {
+	// Create room
+	topic := ""
+
+	if channel.Purpose != "" && channel.Header != "" {
+		topic = channel.Purpose + " " + channel.Header
+	} else if channel.Purpose != "" {
+		topic = channel.Purpose
+	} else if channel.Header != "" {
 		topic = channel.Header
 	}
 	roomName := dmRoomDisplayTitle(channel, mxUserA, mxUserB, isSelfDM)
