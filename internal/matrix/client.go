@@ -817,6 +817,67 @@ func (c *Client) SendReplyWithTimestamp(roomID, message, formattedBody string, r
 	return &resp, nil
 }
 
+// SendThreadMessageWithTimestamp sends a thread message (MSC3440) with a specific timestamp.
+// threadRootEventID is the root event of the thread, lastEventInThread is the latest event in that thread.
+func (c *Client) SendThreadMessageWithTimestamp(
+    roomID, message, formattedBody, threadRootEventID, lastEventInThread string,
+    timestamp int64, senderUserID string,
+) (*SendMessageResponse, error) {
+    txnID := c.getNextTxnID()
+
+    endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
+        url.PathEscape(roomID), url.PathEscape(txnID))
+
+    params := url.Values{}
+    if timestamp > 0 && c.asToken != "" {
+        params.Set("ts", strconv.FormatInt(timestamp, 10))
+    }
+    if senderUserID != "" && c.asToken != "" {
+        params.Set("user_id", senderUserID)
+    }
+    if len(params) > 0 {
+        endpoint += "?" + params.Encode()
+    }
+
+    content := map[string]interface{}{
+        "msgtype": "m.text",
+        "body":    message,
+        "m.relates_to": map[string]interface{}{
+            "rel_type": "m.thread",
+            "event_id": threadRootEventID,
+            "is_falling_back": false,
+        },
+        "m.thread": map[string]interface{}{
+            "latest_event_id": lastEventInThread,
+        },
+    }
+    if formattedBody != "" {
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = formattedBody
+    }
+
+    token := c.adminToken
+    if c.asToken != "" {
+        token = c.asToken
+    }
+
+    body, statusCode, err := c.doRequestWithToken("PUT", endpoint, content, token)
+    if err != nil {
+        return nil, err
+    }
+
+    var resp SendMessageResponse
+    if err := json.Unmarshal(body, &resp); err != nil {
+        return nil, fmt.Errorf("failed to parse response: %w", err)
+    }
+
+    if statusCode != http.StatusOK {
+        return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
+    }
+
+    return &resp, nil
+}
+
 // doRequestWithToken performs an HTTP request with a specific token
 func (c *Client) doRequestWithToken(method, endpoint string, body interface{}, token string) ([]byte, int, error) {
 	return c.doRequestWithTokenAndRetry(method, endpoint, body, token, 0)

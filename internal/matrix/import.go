@@ -692,6 +692,7 @@ type ImportMessagesResult struct {
 	Stats    *MessageImportStats
 	Mapping  map[string]string // MattermostID -> MatrixEventID
 	Errors   []string
+	ThreadLatest map[string]string // rootID -> latest eventID in thread
 }
 
 // ImportMessages imports messages from Mattermost posts to Matrix rooms
@@ -708,6 +709,7 @@ func (i *Importer) ImportMessages(
 		Stats:   &MessageImportStats{},
 		Mapping: make(map[string]string),
 		Errors:  []string{},
+		ThreadLatest: make(map[string]string),
 	}
 	
 	if !i.client.HasASToken() {
@@ -757,14 +759,15 @@ func (i *Importer) ImportMessages(
 			logger.Warn("No user mapping for user %s, message will be sent as AS bot", post.UserID)
 		}
 		
-		// Handle reply
+		// Handle reply as thread
 		var eventID string
 		
 		_, formattedBody := FormatMessage(post.Message, usernameToMxID)
 
 		if post.IsReply() {
-			parentEventID, parentExists := result.Mapping[post.RootID]
-			if !parentExists {
+        	threadRootEventID, rootExists := result.Mapping[post.RootID]
+            if !rootExists {
+                // orphan reply → send as normal message
 				result.Stats.RepliesFailed++
 				parentErr := fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID)
 				result.Errors = append(result.Errors, parentErr)
@@ -782,17 +785,32 @@ func (i *Importer) ImportMessages(
 				}
 				eventID = resp.EventID
 			} else {
-				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, post.Message, formattedBody, parentEventID, post.CreateAt, senderID)
+                // find most recent message in thread
+                lastEventInThread := result.ThreadLatest[post.RootID]
+                if lastEventInThread == "" {
+                    lastEventInThread = threadRootEventID
+                }
+
+                resp, sendErr := i.client.SendThreadMessageWithTimestamp(
+                    roomID,
+                    post.Message,
+                    formattedBody,
+                    threadRootEventID,
+                    lastEventInThread,
+                    post.CreateAt,
+                    senderID,
+                )
 				if sendErr != nil {
 					result.Stats.RepliesFailed++
-					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
-					logMmSendFailure("SendReply", post, roomID, senderID, sendErr)
+                    result.Errors = append(result.Errors, fmt.Sprintf("Failed to send thread reply %s: %v", post.ID, sendErr))
+                    logMmSendFailure("SendThreadMessage", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:reply_error")
 					}
 					continue
 				}
 				eventID = resp.EventID
+				result.ThreadLatest[post.RootID] = eventID
 				result.Stats.RepliesImported++
 			}
 		} else {
@@ -843,6 +861,7 @@ func (i *Importer) ImportMessagesWithFiles(
 		Stats:   &MessageImportStats{},
 		Mapping: make(map[string]string),
 		Errors:  []string{},
+        ThreadLatest: make(map[string]string),
 	}
 	
 	if !i.client.HasASToken() {
@@ -913,8 +932,8 @@ func (i *Importer) ImportMessagesWithFiles(
 		var eventID string
 
 		if post.IsReply() {
-			parentEventID, parentExists := result.Mapping[post.RootID]
-			if !parentExists {
+            threadRootEventID, rootExists := result.Mapping[post.RootID]
+            if !rootExists {
 				result.Stats.RepliesFailed++
 				parentErr := fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID)
 				result.Errors = append(result.Errors, parentErr)
@@ -924,7 +943,7 @@ func (i *Importer) ImportMessagesWithFiles(
 				if sendErr != nil {
 					result.Stats.MessagesFailed++
 					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
-					logMmSendFailure("SendMessage(repair orphan reply)", post, roomID, senderID, sendErr)
+                    logMmSendFailure("SendMessage(repair orphan reply with files)", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:send_error")
 					}
@@ -932,17 +951,31 @@ func (i *Importer) ImportMessagesWithFiles(
 				}
 				eventID = resp.EventID
 			} else {
-				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, messageContent, formattedBody, parentEventID, post.CreateAt, senderID)
+                lastEventInThread := result.ThreadLatest[post.RootID]
+                if lastEventInThread == "" {
+                    lastEventInThread = threadRootEventID
+                }
+
+                resp, sendErr := i.client.SendThreadMessageWithTimestamp(
+                    roomID,
+                    messageContent,
+                    formattedBody,
+                    threadRootEventID,
+                    lastEventInThread,
+                    post.CreateAt,
+                    senderID,
+                )
 				if sendErr != nil {
 					result.Stats.RepliesFailed++
-					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
-					logMmSendFailure("SendReply", post, roomID, senderID, sendErr)
+                    result.Errors = append(result.Errors, fmt.Sprintf("Failed to send thread reply %s: %v", post.ID, sendErr))
+                    logMmSendFailure("SendThreadMessage(with files)", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:reply_error")
 					}
 					continue
 				}
 				eventID = resp.EventID
+				result.ThreadLatest[post.RootID] = eventID
 				result.Stats.RepliesImported++
 			}
 		} else {
@@ -950,7 +983,7 @@ func (i *Importer) ImportMessagesWithFiles(
 			if sendErr != nil {
 				result.Stats.MessagesFailed++
 				result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
-				logMmSendFailure("SendMessage", post, roomID, senderID, sendErr)
+				logMmSendFailure("SendMessage(with files)", post, roomID, senderID, sendErr)
 				if progress != nil {
 					progress(idx+1, total, post.ChannelID, "failed:send_error")
 				}
