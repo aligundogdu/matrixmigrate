@@ -51,6 +51,7 @@ type MatrixConfig struct {
 	Homeserver string           `mapstructure:"homeserver"`
 	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`  // Rate limiting configuration
 	AppService AppServiceConfig `mapstructure:"appservice"`  // Application Service for message import
+	DefaultUserPassword string `mapstructure:"default_user_password"` // Default password for new users during migration
 }
 
 // AppServiceConfig holds Application Service configuration for message import
@@ -375,6 +376,16 @@ func (c *Config) GetHSToken() string {
 // UseAppService returns true if Application Service mode is enabled
 func (c *Config) UseAppService() bool {
 	return c.Matrix.AppService.Enabled && c.GetASToken() != ""
+}
+
+// GetDefaultUserPassword returns the default password for new Matrix users.
+// It can be set via config or the MATRIXMIGRATE_DEFAULT_USER_PASSWORD environment variable.
+// If empty, the migration will not set a password for new users.
+func (c *Config) GetDefaultUserPassword() string {
+	if c.Matrix.DefaultUserPassword == "" {
+		return os.Getenv("MATRIXMIGRATE_DEFAULT_USER_PASSWORD")
+	}
+	return c.Matrix.DefaultUserPassword
 }
 
 // GetFileMode returns the file migration mode (link, upload, or skip)
