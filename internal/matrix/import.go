@@ -21,12 +21,6 @@ func NewImporter(client *Client) *Importer {
 // ImportProgressCallback is called to report import progress
 type ImportProgressCallback func(stage string, current, total int, item string)
 
-// GenerateRandomPassword generates a random password for new users
-func GenerateRandomPassword() string {
-	// In production, use crypto/rand for secure random password
-	return "ChangeMe123!" // Placeholder - users should change this
-}
-
 // ImportUsers imports users from Mattermost to Matrix
 func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
 	mapping := make(map[string]string)
@@ -93,7 +87,6 @@ func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[stri
 		}
 
 		req := &CreateUserRequest{
-			Password:    GenerateRandomPassword(),
 			DisplayName: displayName,
 			Admin:       false,
 			Deactivated: false,
