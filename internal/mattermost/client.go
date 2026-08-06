@@ -133,9 +133,9 @@ func (c *Client) GetTeams() ([]Team, error) {
 // GetChannels retrieves all channels from the database
 func (c *Client) GetChannels() ([]Channel, error) {
 	query := `
-		SELECT 
-			id, 
-			COALESCE(teamid, '') as teamid, 
+		SELECT
+			id,
+			COALESCE(teamid, '') as teamid,
 			name, displayname,
 			COALESCE(header, '') as header,
 			COALESCE(purpose, '') as purpose,
@@ -144,7 +144,7 @@ func (c *Client) GetChannels() ([]Channel, error) {
 			COALESCE(creatorid, '') as creatorid,
 			COALESCE(totalmsgcount, 0) as totalmsgcount
 		FROM channels
-		WHERE type IN ('O', 'P', 'G')
+		WHERE type IN ('O', 'P', 'G', 'D')
 		ORDER BY createat ASC
 	`
 
@@ -263,10 +263,10 @@ func (c *Client) GetTeamCount() (int, error) {
 	return count, err
 }
 
-// GetChannelCount returns the total number of channels (public, private, and group)
+// GetChannelCount returns the total number of channels (public, private, group, and direct)
 func (c *Client) GetChannelCount() (int, error) {
 	var count int
-	err := c.db.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('O', 'P', 'G')").Scan(&count)
+	err := c.db.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('O', 'P', 'G', 'D')").Scan(&count)
 	return count, err
 }
 

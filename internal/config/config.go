@@ -23,6 +23,7 @@ type MattermostConfig struct {
 	ConfigPath string         `mapstructure:"config_path"` // Path to config.json on remote server
 	Database   DatabaseConfig `mapstructure:"database"`    // Optional: manual override
 	Files      FilesConfig    `mapstructure:"files"`       // File/attachment settings
+	IncludeDMs bool           `mapstructure:"include_dms"` // Whether to migrate direct messages (default: true)
 }
 
 // FilesConfig holds file attachment migration settings
@@ -75,6 +76,10 @@ type SSHConfig struct {
 	KeyPath       string `mapstructure:"key_path"`       // Optional: path to SSH key
 	PassphraseEnv string `mapstructure:"passphrase_env"` // Optional: env var for key passphrase
 	PasswordEnv   string `mapstructure:"password_env"`   // Optional: env var for SSH password
+	// FileReadSudoPasswordEnv names an env var whose value is the remote sudo password.
+	// When set (Mattermost SSH file reads only), ReadFile uses sudo -S so attachment migration
+	// works without ACL/NOPASSWD. Prefer ACL read access; use only in trusted environments.
+	FileReadSudoPasswordEnv string `mapstructure:"file_read_sudo_password_env"`
 }
 
 // DatabaseConfig holds PostgreSQL connection configuration (optional manual override)
@@ -89,6 +94,9 @@ type DatabaseConfig struct {
 // APIConfig holds Matrix API configuration
 type APIConfig struct {
 	BaseURL       string `mapstructure:"base_url"`
+	// MASURL is the Matrix Authentication Service (account) HTTP base URL.
+	// When set, user registration uses POST /api/admin/v1/users on this host instead of Synapse admin API.
+	MASURL        string `mapstructure:"mas_url"`
 	AdminTokenEnv string `mapstructure:"admin_token_env"` // Optional: if provided, use this token
 	Port          int    `mapstructure:"port"`            // Synapse API port (default: 8008)
 }
@@ -157,6 +165,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mattermost.config_path", "/opt/mattermost/config/config.json")
 	v.SetDefault("mattermost.database.host", "localhost")
 	v.SetDefault("mattermost.database.port", 5432)
+	v.SetDefault("mattermost.include_dms", true) // Enable DM migration by default
 	v.SetDefault("matrix.ssh.port", 22)
 	v.SetDefault("matrix.api.base_url", "http://localhost:8008")
 	v.SetDefault("matrix.api.port", 8008) // Synapse API port for SSH tunnel
@@ -210,12 +219,11 @@ func expandPath(path string) string {
 
 // Validate validates the configuration
 func (c *Config) Validate() error {
-	// Validate Mattermost config if SSH host is provided
+	// Validate Mattermost SSH config if SSH host is provided
 	if c.Mattermost.SSH.Host != "" {
 		if c.Mattermost.SSH.User == "" {
 			return fmt.Errorf("mattermost.ssh.user is required")
 		}
-		// Either key_path or password_env must be provided
 		hasKey := c.Mattermost.SSH.KeyPath != ""
 		hasPassword := c.Mattermost.SSH.PasswordEnv != ""
 		if !hasKey && !hasPassword {
@@ -223,26 +231,30 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate Matrix config if SSH host is provided
+	// Validate Matrix SSH config if SSH host is provided
 	if c.Matrix.SSH.Host != "" {
 		if c.Matrix.SSH.User == "" {
 			return fmt.Errorf("matrix.ssh.user is required")
 		}
-		// Either key_path or password_env must be provided
 		hasKey := c.Matrix.SSH.KeyPath != ""
 		hasPassword := c.Matrix.SSH.PasswordEnv != ""
 		if !hasKey && !hasPassword {
 			return fmt.Errorf("matrix.ssh: either key_path or password_env is required")
 		}
-		if c.Matrix.Homeserver == "" {
-			return fmt.Errorf("matrix.homeserver is required")
-		}
-		// Check that either auth or admin token is provided
+	}
+
+	// Validate Matrix API auth whenever homeserver is configured (SSH or local mode)
+	if c.Matrix.Homeserver != "" {
 		hasAuth := c.Matrix.Auth.Username != "" && c.Matrix.Auth.PasswordEnv != ""
 		hasToken := c.Matrix.API.AdminTokenEnv != ""
 		if !hasAuth && !hasToken {
 			return fmt.Errorf("matrix: either auth (username/password_env) or api.admin_token_env is required")
 		}
+	}
+
+	// Validate file upload config
+	if c.GetFileMode() == "upload" && c.Mattermost.Files.LocalDataPath == "" {
+		return fmt.Errorf("mattermost.files.local_data_path is required when mode is \"upload\"")
 	}
 
 	return nil
@@ -351,6 +363,11 @@ func (c *Config) MatrixAPIURL() string {
 	return strings.TrimSuffix(c.Matrix.API.BaseURL, "/")
 }
 
+// MatrixMASURL returns the MAS account API base URL, or empty if not configured.
+func (c *Config) MatrixMASURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(c.Matrix.API.MASURL), "/")
+}
+
 // FormatUserID formats a username as a Matrix user ID
 func (c *Config) FormatUserID(username string) string {
 	return fmt.Sprintf("@%s:%s", username, c.Matrix.Homeserver)
@@ -420,4 +437,15 @@ func (c *Config) ShouldUploadFile(fileSize int64) bool {
 	}
 	// mode == "upload"
 	return fileSize <= c.GetMaxUploadSize()
+}
+
+// GetLocalFilePath returns the full path for a file given its relative path from the DB.
+// Joins LocalDataPath with the relative path using a forward slash (always Linux-style,
+// since the path lives on the remote Mattermost server).
+func (c *Config) GetLocalFilePath(relPath string) string {
+	base := strings.TrimSuffix(c.Mattermost.Files.LocalDataPath, "/")
+	if base == "" {
+		return relPath
+	}
+	return base + "/" + relPath
 }

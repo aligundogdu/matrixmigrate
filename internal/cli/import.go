@@ -47,10 +47,19 @@ Requires: appservice.enabled=true and MATRIX_AS_TOKEN env var`,
 	RunE:  runImportMessages,
 }
 
+var leaveRoomsCmd = &cobra.Command{
+	Use:     "leave_rooms",
+	Aliases: []string{"leave-rooms"},
+	Short:   "Leave all migrated rooms and spaces",
+	Long:    `Make the migration admin user leave every room and space created during migration.`,
+	RunE:    runLeaveRooms,
+}
+
 func init() {
 	importCmd.AddCommand(importAssetsCmd)
 	importCmd.AddCommand(importMembershipsCmd)
 	importCmd.AddCommand(importMessagesCmd)
+	importCmd.AddCommand(leaveRoomsCmd)
 }
 
 func runImportAssets(cmd *cobra.Command, args []string) error {
@@ -98,12 +107,14 @@ func runImportAssets(cmd *cobra.Command, args []string) error {
 	}
 
 	printSuccess(i18n.T("messages.mapping_saved", result.OutputFile))
-	printInfo(fmt.Sprintf("  Users: created=%d, skipped=%d, failed=%d", 
+	printInfo(fmt.Sprintf("  Users: created=%d, skipped=%d, failed=%d",
 		result.UsersCreated, result.UsersSkipped, result.UsersFailed))
-	printInfo(fmt.Sprintf("  Spaces: created=%d, skipped=%d, failed=%d", 
+	printInfo(fmt.Sprintf("  Spaces: created=%d, skipped=%d, failed=%d",
 		result.SpacesCreated, result.SpacesSkipped, result.SpacesFailed))
-	printInfo(fmt.Sprintf("  Rooms: created=%d, skipped=%d, failed=%d, linked=%d", 
+	printInfo(fmt.Sprintf("  Rooms: created=%d, skipped=%d, failed=%d, linked=%d",
 		result.RoomsCreated, result.RoomsSkipped, result.RoomsFailed, result.RoomsLinked))
+	printInfo(fmt.Sprintf("  DMs: created=%d, skipped=%d, failed=%d",
+		result.DMRoomsCreated, result.DMRoomsSkipped, result.DMRoomsFailed))
 	printSuccess(i18n.T("messages.step_completed", "import_assets"))
 
 	return nil
@@ -157,6 +168,53 @@ func runImportMemberships(cmd *cobra.Command, args []string) error {
 		result.MembersAdded, result.MembersSkipped, result.MembersFailed))
 	printSuccess(i18n.T("messages.step_completed", "import_memberships"))
 	printSuccess(i18n.T("messages.migration_completed"))
+
+	return nil
+}
+
+func runLeaveRooms(cmd *cobra.Command, args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Create orchestrator
+	orch, err := migration.NewOrchestrator(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create orchestrator: %w", err)
+	}
+	defer orch.Close()
+
+	// Check prerequisites
+	state := orch.GetState()
+	canRun, reason := state.CanRunStep(migration.StepLeaveRooms)
+	if !canRun {
+		return fmt.Errorf("cannot run step: %s", reason)
+	}
+
+	// Connect to Matrix
+	printInfo(i18n.T("progress.connecting", "Matrix"))
+	if err := orch.ConnectMatrix(); err != nil {
+		return err
+	}
+	printSuccess(i18n.T("progress.connected", "Matrix"))
+
+	printInfo("Leaving all migrated rooms and spaces...")
+	progress := func(stage string, current, total int, item string) {
+		if total > 0 {
+			printProgress("%s: %d/%d", stage, current, total)
+		} else {
+			printProgress("%s...", stage)
+		}
+	}
+
+	result, err := orch.LeaveRooms(progress)
+	if err != nil {
+		return err
+	}
+
+	printInfo(fmt.Sprintf("  Rooms left: %d, failed: %d", result.RoomsLeft, result.RoomsLeftFailed))
+	printSuccess(i18n.T("messages.step_completed", "leave_rooms"))
 
 	return nil
 }

@@ -14,6 +14,8 @@ type CreateUserRequest struct {
 	DisplayName string `json:"displayname,omitempty"`
 	Admin       bool   `json:"admin"`
 	Deactivated bool   `json:"deactivated"`
+	// Email is used only when creating accounts via MAS (matrix.api.mas_url); omitted from Synapse JSON.
+	Email string `json:"-"`
 }
 
 // UserResponse is the response from the Admin API for user operations
@@ -25,6 +27,17 @@ type UserResponse struct {
 	Deactivated bool   `json:"deactivated"`
 	Errcode     string `json:"errcode,omitempty"`
 	Error       string `json:"error,omitempty"`
+}
+
+// masCreateUserRequest is the JSON body for POST /api/admin/v1/users (Matrix Authentication Service).
+type masCreateUserRequest struct {
+	Username string          `json:"username"`
+	Password string          `json:"password"`
+	Emails   []masEmailEntry `json:"emails"`
+}
+
+type masEmailEntry struct {
+	Email string `json:"email"`
 }
 
 // Room represents a Matrix room
@@ -82,6 +95,11 @@ type JoinRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// MembershipRequest is the request body for setting user membership in a room
+type MembershipRequest struct {
+	Membership string `json:"membership"`
+}
+
 // GenericResponse is a generic API response
 type GenericResponse struct {
 	Errcode string `json:"errcode,omitempty"`
@@ -133,11 +151,16 @@ type ImportStats struct {
 	RoomsCreated    int `json:"rooms_created"`
 	RoomsSkipped    int `json:"rooms_skipped"`
 	RoomsFailed     int `json:"rooms_failed"`
+	DMRoomsCreated  int `json:"dm_rooms_created"`
+	DMRoomsSkipped  int `json:"dm_rooms_skipped"`
+	DMRoomsFailed   int `json:"dm_rooms_failed"`
 	MembersAdded    int `json:"members_added"`
 	MembersSkipped  int `json:"members_skipped"`
 	MembersFailed   int `json:"members_failed"`
 	RoomsLinked     int `json:"rooms_linked"`
 	RoomsLinkFailed int `json:"rooms_link_failed"`
+	RoomsLeft       int `json:"rooms_left"`
+	RoomsLeftFailed int `json:"rooms_left_failed"`
 }
 
 // RoomPreset defines room creation presets

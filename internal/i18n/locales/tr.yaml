@@ -11,6 +11,7 @@ menu:
   import_memberships: "Üyelikleri İçe Aktar"
   export_messages: "Mesajları Dışa Aktar"
   import_messages: "Mesajları İçe Aktar"
+  leave_rooms: "Tüm Odalardan Ayrıl"
   test_connection: "Bağlantı Testi"
   test_mattermost: "Mattermost Bağlantısını Test Et"
   test_matrix: "Matrix Bağlantısını Test Et"

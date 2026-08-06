@@ -24,6 +24,7 @@ const (
 	ViewImportMemberships
 	ViewExportMessages
 	ViewImportMessages
+	ViewLeaveRooms
 	ViewTestConnection
 	ViewStatus
 	ViewSettings
@@ -125,6 +126,7 @@ func (m *Model) createMenuItems() []MenuItem {
 	canImportMemberships, _ := state.CanRunStep(migration.StepImportMemberships)
 	canExportMessages, _ := state.CanRunStep(migration.StepExportMessages)
 	canImportMessages, _ := state.CanRunStep(migration.StepImportMessages)
+	canLeaveRooms, _ := state.CanRunStep(migration.StepLeaveRooms)
 
 	return []MenuItem{
 		{
@@ -162,6 +164,12 @@ func (m *Model) createMenuItems() []MenuItem {
 			Desc:     "Import messages to Matrix rooms",
 			View:     ViewImportMessages,
 			Disabled: !canImportMessages,
+		},
+		{
+			Title:    locale.Menu.LeaveRooms,
+			Desc:     "Admin user leaves all migrated rooms and spaces",
+			View:     ViewLeaveRooms,
+			Disabled: !canLeaveRooms,
 		},
 		{
 			Title: locale.Menu.TestConnection,
@@ -304,6 +312,8 @@ func (m *Model) handleViewChange(view View) tea.Cmd {
 		return m.runExportMessages()
 	case ViewImportMessages:
 		return m.runImportMessages()
+	case ViewLeaveRooms:
+		return m.runLeaveRooms()
 	case ViewTestConnection:
 		return m.runTestConnection()
 	case ViewStatus:
@@ -332,7 +342,7 @@ func (m Model) View() string {
 		return m.renderSuccess()
 	case ViewTestConnection:
 		return m.renderTestConnection()
-	case ViewExportAssets, ViewImportAssets, ViewExportMemberships, ViewImportMemberships, ViewExportMessages, ViewImportMessages:
+	case ViewExportAssets, ViewImportAssets, ViewExportMemberships, ViewImportMemberships, ViewExportMessages, ViewImportMessages, ViewLeaveRooms:
 		return m.renderProgress()
 	default:
 		return m.renderMenu()
@@ -413,6 +423,8 @@ func (m Model) renderProgress() string {
 		title = locale.Menu.ExportMessages
 	case ViewImportMessages:
 		title = locale.Menu.ImportMessages
+	case ViewLeaveRooms:
+		title = locale.Menu.LeaveRooms
 	case ViewTestConnection:
 		title = locale.Menu.TestConnection
 	default:
@@ -628,6 +640,21 @@ func (m Model) renderSuccess() string {
 			sections = append(sections, "")
 		}
 
+		// Import stats - DMs
+		if r.DMRoomsCreated > 0 || r.DMRoomsSkipped > 0 || r.DMRoomsFailed > 0 {
+			sections = append(sections, SubtitleStyle.Render("💌 Direct Messages:"))
+			if r.DMRoomsCreated > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Created: %d", r.DMRoomsCreated)))
+			}
+			if r.DMRoomsSkipped > 0 {
+				sections = append(sections, DimStyle.Render(fmt.Sprintf("   ⊘ Skipped: %d", r.DMRoomsSkipped)))
+			}
+			if r.DMRoomsFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.DMRoomsFailed)))
+			}
+			sections = append(sections, "")
+		}
+
 		// Membership import stats
 		if r.MembersAdded > 0 || r.MembersSkipped > 0 || r.MembersFailed > 0 {
 			sections = append(sections, SubtitleStyle.Render("👤 Memberships:"))
@@ -639,6 +666,18 @@ func (m Model) renderSuccess() string {
 			}
 			if r.MembersFailed > 0 {
 				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.MembersFailed)))
+			}
+			sections = append(sections, "")
+		}
+
+		// Room leave stats
+		if r.RoomsLeft > 0 || r.RoomsLeftFailed > 0 {
+			sections = append(sections, SubtitleStyle.Render("🚪 Room Cleanup:"))
+			if r.RoomsLeft > 0 {
+				sections = append(sections, SuccessStyle.Render(fmt.Sprintf("   ✓ Left: %d", r.RoomsLeft)))
+			}
+			if r.RoomsLeftFailed > 0 {
+				sections = append(sections, ErrorStyle.Render(fmt.Sprintf("   ✗ Failed: %d", r.RoomsLeftFailed)))
 			}
 			sections = append(sections, "")
 		}
@@ -929,6 +968,30 @@ func (m *Model) runImportMessages() tea.Cmd {
 		msg := fmt.Sprintf("Messages imported: %d imported, %d skipped, %d failed, %d files linked",
 			result.MessagesImported, result.MessagesSkipped, result.MessagesFailed, result.FilesLinked)
 		return operationCompleteMsg{message: msg}
+	}
+}
+
+func (m *Model) runLeaveRooms() tea.Cmd {
+	return func() tea.Msg {
+		sendProgress("Connecting to Matrix...", 0, 0, "")
+
+		if err := m.orchestrator.ConnectMatrix(); err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		sendProgress("Leaving all rooms and spaces...", 0, 0, "")
+
+		progress := func(stage string, current, total int, item string) {
+			sendProgress(stage, current, total, item)
+		}
+
+		result, err := m.orchestrator.LeaveRooms(progress)
+		if err != nil {
+			return operationCompleteMsg{err: err}
+		}
+
+		msg := fmt.Sprintf("Left %d rooms (%d failed)", result.RoomsLeft, result.RoomsLeftFailed)
+		return operationCompleteMsg{message: msg, result: result}
 	}
 }
 

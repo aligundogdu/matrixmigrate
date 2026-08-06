@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/aligundogdu/matrixmigrate/internal/config"
@@ -172,6 +173,50 @@ func GetDatabaseCredentials(sshCfg config.SSHConfig, passphrase, password string
 	}
 
 	// Parse data source
+	creds, err := ParseDataSource(mmConfig.SqlSettings.DataSource)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse data source: %w", err)
+	}
+
+	return creds, nil
+}
+
+// ReadConfigLocal reads Mattermost config.json from the local filesystem
+func ReadConfigLocal(configPath string) (*MattermostConfig, error) {
+	paths := []string{configPath}
+	if configPath == "" {
+		paths = DefaultConfigPaths
+	}
+
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var mmConfig MattermostConfig
+		if err := json.Unmarshal(data, &mmConfig); err != nil {
+			return nil, fmt.Errorf("failed to parse config.json from %s: %w", path, err)
+		}
+		return &mmConfig, nil
+	}
+
+	return nil, fmt.Errorf("could not find Mattermost config.json in any of the default locations")
+}
+
+// GetDatabaseCredentialsLocal reads database credentials from a local config.json
+func GetDatabaseCredentialsLocal(configPath string) (*DatabaseCredentials, error) {
+	mmConfig, err := ReadConfigLocal(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if mmConfig.SqlSettings.DriverName != "postgres" {
+		return nil, fmt.Errorf("unsupported database driver: %s (only postgres is supported)", mmConfig.SqlSettings.DriverName)
+	}
+
 	creds, err := ParseDataSource(mmConfig.SqlSettings.DataSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse data source: %w", err)

@@ -318,6 +318,15 @@ The migration tool is designed to be **resumable**:
 
 This is normal behavior and the tool will eventually complete all imports.
 
+## further Synapse `homeserver.yaml` settings
+
+set the following to auto join users to rooms during `import memberships`, without this the Message Import will fail with "not in room" errors
+
+```
+auto_accept_invites:
+    enabled: true
+```
+
 ## Application Service Setup (for Message Import)
 
 To import messages with their **original timestamps**, you need to configure an Application Service (AS) on your Synapse server. Without AS, messages will be imported with the current timestamp.
@@ -348,7 +357,9 @@ hs_token: "YOUR_GENERATED_HS_TOKEN"
 sender_localpart: matrixmigrate
 rate_limited: false  # Disable rate limiting for AS
 namespaces:
-  users: []
+  users:
+    - regex: ".*"
+      exclusive: false
   rooms: []
   aliases: []
 ```
@@ -780,7 +791,9 @@ hs_token: "OLUŞTURDUĞUNUZ_HS_TOKEN"
 sender_localpart: matrixmigrate
 rate_limited: false  # AS için hız sınırlamasını devre dışı bırak
 namespaces:
-  users: []
+  users:
+    - regex: ".*"
+      exclusive: false
   rooms: []
   aliases: []
 ```

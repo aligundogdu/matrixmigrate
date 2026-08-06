@@ -126,87 +126,84 @@ func runMattermostTests(cfg *config.Config, callback TestCallback) []TestStep {
 		return steps
 	}
 
+	sshEnabled := cfg.Mattermost.SSH.Host != ""
+	passphrase := cfg.GetSSHKeyPassphrase("mattermost")
+	sshPassword := cfg.GetSSHPassword("mattermost")
+
 	// Step 1: SSH configuration
 	step := TestStep{
 		Name:        "mm_ssh_config",
 		Description: "SSH configuration",
 		Status:      TestPending,
 	}
-	
-	if cfg.Mattermost.SSH.Host == "" {
+
+	if !sshEnabled {
 		step.Status = TestSkipped
-		step.Details = "SSH host not configured"
+		step.Details = "Local mode (same server, no SSH required)"
 		if callback != nil {
 			callback("mattermost", &step)
 		}
 		steps = append(steps, step)
-		return steps
-	}
+	} else {
+		hasKey := cfg.Mattermost.SSH.KeyPath != ""
+		hasPassword := cfg.Mattermost.SSH.PasswordEnv != ""
 
-	// Check auth method
-	hasKey := cfg.Mattermost.SSH.KeyPath != ""
-	hasPassword := cfg.Mattermost.SSH.PasswordEnv != ""
-	
-	if hasKey {
-		// Check if key file exists
-		if _, err := os.Stat(cfg.Mattermost.SSH.KeyPath); err != nil {
+		if hasKey {
+			if _, err := os.Stat(cfg.Mattermost.SSH.KeyPath); err != nil {
+				step.Status = TestFailed
+				step.Error = fmt.Sprintf("SSH key not found: %s", cfg.Mattermost.SSH.KeyPath)
+			} else {
+				step.Status = TestPassed
+				step.Details = fmt.Sprintf("Key: %s", cfg.Mattermost.SSH.KeyPath)
+			}
+		} else if hasPassword {
+			password := cfg.GetSSHPassword("mattermost")
+			if password == "" {
+				step.Status = TestFailed
+				step.Error = fmt.Sprintf("SSH password env var not set: %s", cfg.Mattermost.SSH.PasswordEnv)
+			} else {
+				step.Status = TestPassed
+				step.Details = fmt.Sprintf("Password auth via $%s", cfg.Mattermost.SSH.PasswordEnv)
+			}
+		} else {
 			step.Status = TestFailed
-			step.Error = fmt.Sprintf("SSH key not found: %s", cfg.Mattermost.SSH.KeyPath)
+			step.Error = "No SSH authentication method configured"
+		}
+
+		if callback != nil {
+			callback("mattermost", &step)
+		}
+		steps = append(steps, step)
+
+		if step.Status == TestFailed {
+			return steps
+		}
+
+		// Step 2: SSH connection
+		step = TestStep{
+			Name:        "mm_ssh_connect",
+			Description: "SSH connection",
+			Status:      TestRunning,
+			Details:     fmt.Sprintf("%s@%s:%d", cfg.Mattermost.SSH.User, cfg.Mattermost.SSH.Host, cfg.Mattermost.SSH.Port),
+		}
+		if callback != nil {
+			callback("mattermost", &step)
+		}
+
+		if err := ssh.TestConnectionWithPassword(cfg.Mattermost.SSH, passphrase, sshPassword); err != nil {
+			step.Status = TestFailed
+			step.Error = err.Error()
 		} else {
 			step.Status = TestPassed
-			step.Details = fmt.Sprintf("Key: %s", cfg.Mattermost.SSH.KeyPath)
 		}
-	} else if hasPassword {
-		password := cfg.GetSSHPassword("mattermost")
-		if password == "" {
-			step.Status = TestFailed
-			step.Error = fmt.Sprintf("SSH password env var not set: %s", cfg.Mattermost.SSH.PasswordEnv)
-		} else {
-			step.Status = TestPassed
-			step.Details = fmt.Sprintf("Password auth via $%s", cfg.Mattermost.SSH.PasswordEnv)
+		if callback != nil {
+			callback("mattermost", &step)
 		}
-	} else {
-		step.Status = TestFailed
-		step.Error = "No SSH authentication method configured"
-	}
-	
-	if callback != nil {
-		callback("mattermost", &step)
-	}
-	steps = append(steps, step)
+		steps = append(steps, step)
 
-	if step.Status == TestFailed {
-		return steps
-	}
-
-	// Step 2: SSH connection
-	step = TestStep{
-		Name:        "mm_ssh_connect",
-		Description: "SSH connection",
-		Status:      TestRunning,
-		Details:     fmt.Sprintf("%s@%s:%d", cfg.Mattermost.SSH.User, cfg.Mattermost.SSH.Host, cfg.Mattermost.SSH.Port),
-	}
-	if callback != nil {
-		callback("mattermost", &step)
-	}
-
-	passphrase := cfg.GetSSHKeyPassphrase("mattermost")
-	sshPassword := cfg.GetSSHPassword("mattermost")
-	
-	err := ssh.TestConnectionWithPassword(cfg.Mattermost.SSH, passphrase, sshPassword)
-	if err != nil {
-		step.Status = TestFailed
-		step.Error = err.Error()
-	} else {
-		step.Status = TestPassed
-	}
-	if callback != nil {
-		callback("mattermost", &step)
-	}
-	steps = append(steps, step)
-
-	if step.Status == TestFailed {
-		return steps
+		if step.Status == TestFailed {
+			return steps
+		}
 	}
 
 	// Step 3: Config file read (if not manual DB config)
@@ -221,7 +218,14 @@ func runMattermostTests(cfg *config.Config, callback TestCallback) []TestStep {
 			callback("mattermost", &step)
 		}
 
-		creds, err := mattermost.GetDatabaseCredentials(cfg.Mattermost.SSH, passphrase, sshPassword, cfg.Mattermost.ConfigPath)
+		var creds *mattermost.DatabaseCredentials
+		var err error
+		if sshEnabled {
+			creds, err = mattermost.GetDatabaseCredentials(cfg.Mattermost.SSH, passphrase, sshPassword, cfg.Mattermost.ConfigPath)
+		} else {
+			creds, err = mattermost.GetDatabaseCredentialsLocal(cfg.Mattermost.ConfigPath)
+		}
+
 		if err != nil {
 			step.Status = TestFailed
 			step.Error = err.Error()
@@ -249,24 +253,21 @@ func runMattermostTests(cfg *config.Config, callback TestCallback) []TestStep {
 		callback("mattermost", &step)
 	}
 
-	// Create orchestrator temporarily to test DB
 	orch, err := NewOrchestrator(cfg)
 	if err != nil {
 		step.Status = TestFailed
 		step.Error = err.Error()
 	} else {
 		defer orch.Close()
-		
+
 		if err := orch.ConnectMattermost(); err != nil {
 			step.Status = TestFailed
 			step.Error = err.Error()
 		} else {
-			// Test query
 			if err := orch.mmClient.Ping(); err != nil {
 				step.Status = TestFailed
 				step.Error = fmt.Sprintf("Database ping failed: %s", err.Error())
 			} else {
-				// Get some stats
 				users, teams, channels, _ := mattermost.NewExporter(orch.mmClient).GetCounts()
 				step.Status = TestPassed
 				step.Details = fmt.Sprintf("%d users, %d teams, %d channels", users, teams, channels)
@@ -289,86 +290,84 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 		return steps
 	}
 
+	sshEnabled := cfg.Matrix.SSH.Host != ""
+	passphrase := cfg.GetSSHKeyPassphrase("matrix")
+	sshPassword := cfg.GetSSHPassword("matrix")
+
 	// Step 1: SSH configuration
 	step := TestStep{
 		Name:        "mx_ssh_config",
 		Description: "SSH configuration",
 		Status:      TestPending,
 	}
-	
-	if cfg.Matrix.SSH.Host == "" {
+
+	if !sshEnabled {
 		step.Status = TestSkipped
-		step.Details = "SSH host not configured"
+		step.Details = "Local mode (same server, no SSH required)"
 		if callback != nil {
 			callback("matrix", &step)
 		}
 		steps = append(steps, step)
-		return steps
-	}
+	} else {
+		hasKey := cfg.Matrix.SSH.KeyPath != ""
+		hasPassword := cfg.Matrix.SSH.PasswordEnv != ""
 
-	// Check auth method
-	hasKey := cfg.Matrix.SSH.KeyPath != ""
-	hasPassword := cfg.Matrix.SSH.PasswordEnv != ""
-	
-	if hasKey {
-		if _, err := os.Stat(cfg.Matrix.SSH.KeyPath); err != nil {
+		if hasKey {
+			if _, err := os.Stat(cfg.Matrix.SSH.KeyPath); err != nil {
+				step.Status = TestFailed
+				step.Error = fmt.Sprintf("SSH key not found: %s", cfg.Matrix.SSH.KeyPath)
+			} else {
+				step.Status = TestPassed
+				step.Details = fmt.Sprintf("Key: %s", cfg.Matrix.SSH.KeyPath)
+			}
+		} else if hasPassword {
+			password := cfg.GetSSHPassword("matrix")
+			if password == "" {
+				step.Status = TestFailed
+				step.Error = fmt.Sprintf("SSH password env var not set: %s", cfg.Matrix.SSH.PasswordEnv)
+			} else {
+				step.Status = TestPassed
+				step.Details = fmt.Sprintf("Password auth via $%s", cfg.Matrix.SSH.PasswordEnv)
+			}
+		} else {
 			step.Status = TestFailed
-			step.Error = fmt.Sprintf("SSH key not found: %s", cfg.Matrix.SSH.KeyPath)
+			step.Error = "No SSH authentication method configured"
+		}
+
+		if callback != nil {
+			callback("matrix", &step)
+		}
+		steps = append(steps, step)
+
+		if step.Status == TestFailed {
+			return steps
+		}
+
+		// Step 2: SSH connection
+		step = TestStep{
+			Name:        "mx_ssh_connect",
+			Description: "SSH connection",
+			Status:      TestRunning,
+			Details:     fmt.Sprintf("%s@%s:%d", cfg.Matrix.SSH.User, cfg.Matrix.SSH.Host, cfg.Matrix.SSH.Port),
+		}
+		if callback != nil {
+			callback("matrix", &step)
+		}
+
+		if err := ssh.TestConnectionWithPassword(cfg.Matrix.SSH, passphrase, sshPassword); err != nil {
+			step.Status = TestFailed
+			step.Error = err.Error()
 		} else {
 			step.Status = TestPassed
-			step.Details = fmt.Sprintf("Key: %s", cfg.Matrix.SSH.KeyPath)
 		}
-	} else if hasPassword {
-		password := cfg.GetSSHPassword("matrix")
-		if password == "" {
-			step.Status = TestFailed
-			step.Error = fmt.Sprintf("SSH password env var not set: %s", cfg.Matrix.SSH.PasswordEnv)
-		} else {
-			step.Status = TestPassed
-			step.Details = fmt.Sprintf("Password auth via $%s", cfg.Matrix.SSH.PasswordEnv)
+		if callback != nil {
+			callback("matrix", &step)
 		}
-	} else {
-		step.Status = TestFailed
-		step.Error = "No SSH authentication method configured"
-	}
-	
-	if callback != nil {
-		callback("matrix", &step)
-	}
-	steps = append(steps, step)
+		steps = append(steps, step)
 
-	if step.Status == TestFailed {
-		return steps
-	}
-
-	// Step 2: SSH connection
-	step = TestStep{
-		Name:        "mx_ssh_connect",
-		Description: "SSH connection",
-		Status:      TestRunning,
-		Details:     fmt.Sprintf("%s@%s:%d", cfg.Matrix.SSH.User, cfg.Matrix.SSH.Host, cfg.Matrix.SSH.Port),
-	}
-	if callback != nil {
-		callback("matrix", &step)
-	}
-
-	passphrase := cfg.GetSSHKeyPassphrase("matrix")
-	sshPassword := cfg.GetSSHPassword("matrix")
-	
-	err := ssh.TestConnectionWithPassword(cfg.Matrix.SSH, passphrase, sshPassword)
-	if err != nil {
-		step.Status = TestFailed
-		step.Error = err.Error()
-	} else {
-		step.Status = TestPassed
-	}
-	if callback != nil {
-		callback("matrix", &step)
-	}
-	steps = append(steps, step)
-
-	if step.Status == TestFailed {
-		return steps
+		if step.Status == TestFailed {
+			return steps
+		}
 	}
 
 	// Step 3: API authentication configuration
@@ -377,7 +376,7 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 		Description: "API authentication",
 		Status:      TestPending,
 	}
-	
+
 	if cfg.UseTokenAuth() {
 		token := cfg.GetMatrixAdminToken()
 		if token == "" {
@@ -420,47 +419,54 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 		callback("matrix", &step)
 	}
 
-	// Get local port for tunnel
-	localPort, err := ssh.GetLocalPort()
-	if err != nil {
-		step.Status = TestFailed
-		step.Error = err.Error()
-		if callback != nil {
-			callback("matrix", &step)
+	var baseURL string
+	var tunnel *ssh.Tunnel
+
+	if sshEnabled {
+		localPort, err := ssh.GetLocalPort()
+		if err != nil {
+			step.Status = TestFailed
+			step.Error = err.Error()
+			if callback != nil {
+				callback("matrix", &step)
+			}
+			steps = append(steps, step)
+			return steps
 		}
-		steps = append(steps, step)
-		return steps
-	}
 
-	// Get remote API port from config (default: 8008)
-	remotePort := cfg.Matrix.API.Port
-	if remotePort == 0 {
-		remotePort = 8008
-	}
-
-	// Create tunnel
-	tunnelCfg := ssh.TunnelConfig{
-		SSHConfig:  cfg.Matrix.SSH,
-		LocalPort:  localPort,
-		RemoteHost: "127.0.0.1",
-		RemotePort: remotePort,
-		Passphrase: passphrase,
-		Password:   sshPassword,
-	}
-
-	tunnel, err := ssh.NewTunnel(tunnelCfg)
-	if err != nil {
-		step.Status = TestFailed
-		step.Error = err.Error()
-		if callback != nil {
-			callback("matrix", &step)
+		remotePort := cfg.Matrix.API.Port
+		if remotePort == 0 {
+			remotePort = 8008
 		}
-		steps = append(steps, step)
-		return steps
-	}
-	defer tunnel.Close()
 
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", localPort)
+		tunnelCfg := ssh.TunnelConfig{
+			SSHConfig:  cfg.Matrix.SSH,
+			LocalPort:  localPort,
+			RemoteHost: "127.0.0.1",
+			RemotePort: remotePort,
+			Passphrase: passphrase,
+			Password:   sshPassword,
+		}
+
+		t, err := ssh.NewTunnel(tunnelCfg)
+		if err != nil {
+			step.Status = TestFailed
+			step.Error = err.Error()
+			if callback != nil {
+				callback("matrix", &step)
+			}
+			steps = append(steps, step)
+			return steps
+		}
+		tunnel = t
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d", localPort)
+	} else {
+		baseURL = cfg.MatrixAPIURL()
+	}
+
+	if tunnel != nil {
+		defer tunnel.Close()
+	}
 
 	// Get access token
 	var accessToken string
@@ -481,7 +487,6 @@ func runMatrixTests(cfg *config.Config, callback TestCallback) []TestStep {
 		step.Details = fmt.Sprintf("Logged in as %s", loginResp.UserID)
 	}
 
-	// Test API
 	client := matrix.NewClient(baseURL, accessToken, cfg.Matrix.Homeserver)
 	if err := client.TestConnection(); err != nil {
 		step.Status = TestFailed
