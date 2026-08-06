@@ -40,6 +40,7 @@ type MenuStrings struct {
 	ImportMemberships string `yaml:"import_memberships"`
 	ExportMessages    string `yaml:"export_messages"`
 	ImportMessages    string `yaml:"import_messages"`
+	LeaveRooms        string `yaml:"leave_rooms"`
 	TestConnection    string `yaml:"test_connection"`
 	TestMattermost    string `yaml:"test_mattermost"`
 	TestMatrix        string `yaml:"test_matrix"`
@@ -304,6 +305,8 @@ func getMenuString(l *Locale, key string) string {
 		return l.Menu.ExportMemberships
 	case "import_memberships":
 		return l.Menu.ImportMemberships
+	case "leave_rooms":
+		return l.Menu.LeaveRooms
 	case "test_connection":
 		return l.Menu.TestConnection
 	case "test_mattermost":

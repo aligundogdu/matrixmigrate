@@ -15,6 +15,25 @@ import (
 	"github.com/aligundogdu/matrixmigrate/internal/logger"
 )
 
+// mediaUploadHTTPTimeout caps how long to wait for Matrix media upload (POST body + response headers).
+// The default http.Client timeout (30s) is too low for large files or slow links.
+const mediaUploadHTTPTimeout = 45 * time.Minute
+
+// uploadResponseSnippet abbreviates a non-JSON or error upload body for logs (proxies often return HTML/plain text).
+func uploadResponseSnippet(b []byte, max int) string {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return "(empty body)"
+	}
+	s := string(b)
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
+}
+
 // RateLimitConfig holds rate limiting settings
 type RateLimitConfig struct {
 	RequestsPerSecond float64 // Max requests per second (0 = no limit)
@@ -34,6 +53,7 @@ func DefaultRateLimitConfig() RateLimitConfig {
 // Client represents a Matrix API client
 type Client struct {
 	baseURL    string
+	masURL     string // optional: MAS account API base URL for user registration only
 	adminToken string
 	httpClient *http.Client
 	homeserver string
@@ -76,6 +96,7 @@ func NewClientWithRateLimit(baseURL, adminToken, homeserver string, rlConfig Rat
 	
 	return &Client{
 		baseURL:        baseURL,
+		masURL:         "",
 		adminToken:     adminToken,
 		homeserver:     homeserver,
 		httpClient: &http.Client{
@@ -90,6 +111,12 @@ func NewClientWithRateLimit(baseURL, adminToken, homeserver string, rlConfig Rat
 // SetHomeserver updates the homeserver domain
 func (c *Client) SetHomeserver(homeserver string) {
 	c.homeserver = homeserver
+}
+
+// SetMASURL sets the Matrix Authentication Service base URL for account creation (POST /api/admin/v1/users).
+// Other API calls continue to use the Synapse client base URL.
+func (c *Client) SetMASURL(masBaseURL string) {
+	c.masURL = strings.TrimSuffix(strings.TrimSpace(masBaseURL), "/")
 }
 
 // GetHomeserver returns the current homeserver domain
@@ -128,11 +155,16 @@ func (c *Client) DetectHomeserver() (string, error) {
 
 // doRequest performs an HTTP request to the Matrix API with rate limiting
 func (c *Client) doRequest(method, endpoint string, body interface{}) ([]byte, int, error) {
-	return c.doRequestWithRetry(method, endpoint, body, 0)
+	return c.doRequestWithRetryToBase(c.baseURL, method, endpoint, body, 0)
 }
 
-// doRequestWithRetry performs an HTTP request with retry logic for rate limiting
-func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, retryCount int) ([]byte, int, error) {
+// doRequestWithRetryToBase performs an HTTP request against apiBase (Synapse or MAS) with rate limiting and 429 retries.
+func (c *Client) doRequestWithRetryToBase(apiBase, method, endpoint string, body interface{}, retryCount int) ([]byte, int, error) {
+	apiBase = strings.TrimSuffix(strings.TrimSpace(apiBase), "/")
+	if apiBase == "" {
+		return nil, 0, fmt.Errorf("request base URL is empty")
+	}
+
 	// Rate limiting: ensure minimum time between requests
 	c.mu.Lock()
 	if c.rateLimit > 0 {
@@ -154,7 +186,7 @@ func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, r
 		reqBody = bytes.NewReader(jsonBody)
 	}
 
-	reqURL := c.baseURL + endpoint
+	reqURL := strings.TrimSuffix(apiBase, "/") + endpoint
 	req, err := http.NewRequest(method, reqURL, reqBody)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
@@ -204,7 +236,7 @@ func (c *Client) doRequestWithRetry(method, endpoint string, body interface{}, r
 		time.Sleep(retryAfter)
 		
 		// Retry
-		return c.doRequestWithRetry(method, endpoint, body, retryCount+1)
+		return c.doRequestWithRetryToBase(apiBase, method, endpoint, body, retryCount+1)
 	}
 
 	return respBody, resp.StatusCode, nil
@@ -235,12 +267,70 @@ func (c *Client) TestConnection() error {
 	return err
 }
 
-// CreateUser creates or updates a user via the Admin API
+// CreateUser creates a user via MAS (matrix.api.mas_url) when configured, otherwise Synapse Admin API.
 func (c *Client) CreateUser(username string, req *CreateUserRequest) (*UserResponse, error) {
 	userID := fmt.Sprintf("@%s:%s", username, c.homeserver)
+	if c.masURL != "" {
+		return c.createUserViaMAS(username, userID, req)
+	}
+	return c.createUserViaSynapse(username, userID, req)
+}
+
+func (c *Client) createUserViaMAS(username, userID string, req *CreateUserRequest) (*UserResponse, error) {
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		email = fmt.Sprintf("%s@%s", username, c.homeserver)
+	}
+	masBody := masCreateUserRequest{
+		Username: username,
+		Password: req.Password,
+		Emails:   []masEmailEntry{{Email: email}},
+	}
+	const endpoint = "/api/admin/v1/users"
+	logger.Info("Creating user via MAS: %s %s", username, endpoint)
+
+	body, statusCode, err := c.doRequestWithRetryToBase(c.masURL, "POST", endpoint, masBody, 0)
+	if err != nil {
+		logger.Error("MAS HTTP request failed for user '%s': %v", username, err)
+		return nil, err
+	}
+
+	logger.Info("CreateUser (MAS) response for '%s': status=%d", username, statusCode)
+
+	var resp UserResponse
+	_ = json.Unmarshal(body, &resp)
+
+	if statusCode == http.StatusOK || statusCode == http.StatusCreated {
+		resp.UserID = userID
+		return &resp, nil
+	}
+
+	if statusCode == http.StatusConflict {
+		logger.Info("User '%s' already exists on MAS (409), treating as success", username)
+		resp.UserID = userID
+		return &resp, nil
+	}
+
+	errMsg := strings.TrimSpace(resp.Error)
+	if errMsg == "" {
+		errMsg = strings.TrimSpace(string(body))
+	}
+	lower := strings.ToLower(errMsg)
+	if strings.Contains(lower, "already exists") || strings.Contains(lower, "user already") ||
+		strings.Contains(lower, "in use") || resp.Errcode == "M_USER_IN_USE" {
+		logger.Info("User '%s' already exists on MAS, treating as success", username)
+		resp.UserID = userID
+		return &resp, nil
+	}
+
+	logger.Error("MAS API error for user '%s': status=%d, body=%s", username, statusCode, string(body))
+	return nil, fmt.Errorf("MAS API error (%d): %s", statusCode, errMsg)
+}
+
+func (c *Client) createUserViaSynapse(username, userID string, req *CreateUserRequest) (*UserResponse, error) {
 	endpoint := fmt.Sprintf("/_synapse/admin/v2/users/%s", url.PathEscape(userID))
 
-	logger.Info("Creating user: %s (endpoint: %s)", username, endpoint)
+	logger.Info("Creating user via Synapse: %s (endpoint: %s)", username, endpoint)
 
 	body, statusCode, err := c.doRequest("PUT", endpoint, req)
 	if err != nil {
@@ -370,6 +460,21 @@ func (c *Client) CreateRegularRoom(name, topic string, public bool) (*CreateRoom
 	return c.CreateRoom(req)
 }
 
+// CreateDMRoom creates a direct message room between users.
+// name and topic are sent as m.room.name / m.room.topic so clients still show a title after the creator leaves.
+func (c *Client) CreateDMRoom(name, topic string, invite []string) (*CreateRoomResponse, error) {
+	req := &CreateRoomRequest{
+		Name:       name,
+		Topic:      topic,
+		Visibility: string(VisibilityPrivate),
+		Preset:     string(PresetTrustedPrivateChat),
+		IsDirect:   true,
+		Invite:     invite,
+	}
+
+	return c.CreateRoom(req)
+}
+
 // InviteUser invites a user to a room
 func (c *Client) InviteUser(roomID, userID string) error {
 	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/invite", url.PathEscape(roomID))
@@ -414,6 +519,97 @@ func (c *Client) JoinRoom(roomID string) error {
 		var resp GenericResponse
 		json.Unmarshal(body, &resp)
 		return fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
+	}
+
+	return nil
+}
+
+// LeaveRoom makes the admin user leave a room
+func (c *Client) LeaveRoom(roomID string) error {
+	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/leave", url.PathEscape(roomID))
+
+	body, statusCode, err := c.doRequest("POST", endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	if statusCode != http.StatusOK {
+		var resp GenericResponse
+		json.Unmarshal(body, &resp)
+		return fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
+	}
+
+	return nil
+}
+
+// SetUserPowerLevel sets a single user's power level in a room.
+// It reads the current m.room.power_levels state, updates the users map, and writes it back.
+// Standard levels: 0 = member, 50 = moderator, 100 = admin.
+func (c *Client) SetUserPowerLevel(roomID, userID string, level int) error {
+	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.room.power_levels",
+		url.PathEscape(roomID))
+
+	// Read current power levels.
+	body, statusCode, err := c.doRequest("GET", endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get power levels: %w", err)
+	}
+	if statusCode != http.StatusOK {
+		var resp GenericResponse
+		json.Unmarshal(body, &resp)
+		return fmt.Errorf("failed to get power levels (%d): %s", statusCode, resp.Error)
+	}
+
+	var pl map[string]interface{}
+	if err := json.Unmarshal(body, &pl); err != nil {
+		return fmt.Errorf("failed to parse power levels: %w", err)
+	}
+
+	// Ensure the users map exists and set the level.
+	users, _ := pl["users"].(map[string]interface{})
+	if users == nil {
+		users = make(map[string]interface{})
+	}
+	users[userID] = level
+	pl["users"] = users
+
+	// Write back.
+	body, statusCode, err = c.doRequest("PUT", endpoint, pl)
+	if err != nil {
+		return fmt.Errorf("failed to set power levels: %w", err)
+	}
+	if statusCode != http.StatusOK {
+		var resp GenericResponse
+		json.Unmarshal(body, &resp)
+		return fmt.Errorf("failed to set power levels (%d): %s", statusCode, resp.Error)
+	}
+
+	return nil
+}
+
+// ForceJoinUser makes a specific user join a room using Synapse Admin API
+// This sets the user's membership state to "join" without requiring invitation acceptance
+// Required for message import with user impersonation
+func (c *Client) ForceJoinUser(roomID, userID string) error {
+	endpoint := fmt.Sprintf("/_synapse/admin/v1/rooms/%s/members/%s",
+		url.PathEscape(roomID), url.PathEscape(userID))
+
+	req := &MembershipRequest{
+		Membership: "join",
+	}
+
+	body, statusCode, err := c.doRequest("PUT", endpoint, req)
+	if err != nil {
+		return err
+	}
+
+	// 200 OK is success; 204 No Content can also indicate success
+	if statusCode != http.StatusOK && statusCode != http.StatusNoContent {
+		var resp GenericResponse
+		if jsonErr := json.Unmarshal(body, &resp); jsonErr == nil {
+			return fmt.Errorf("Admin API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
+		}
+		return fmt.Errorf("Admin API error (%d): %s", statusCode, string(body))
 	}
 
 	return nil
@@ -512,91 +708,79 @@ type SendMessageResponse struct {
 
 // SendMessage sends a message to a room (without timestamp - uses current time)
 func (c *Client) SendMessage(roomID, message string) (*SendMessageResponse, error) {
-	return c.SendMessageWithTimestamp(roomID, message, 0, "")
+	return c.SendMessageWithTimestamp(roomID, message, "", 0, "")
 }
 
-// SendMessageWithTimestamp sends a message to a room with a specific timestamp
-// This requires an Application Service token to be set
-// If timestamp is 0, uses current time
-// If senderUserID is provided, the message will appear as sent by that user (requires AS)
-func (c *Client) SendMessageWithTimestamp(roomID, message string, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
+// SendMessageWithTimestamp sends a message to a room with a specific timestamp.
+// formattedBody is optional HTML (org.matrix.custom.html); pass "" to omit it.
+// timestamp 0 uses current time. senderUserID requires an AS token.
+func (c *Client) SendMessageWithTimestamp(roomID, message, formattedBody string, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
 	txnID := c.getNextTxnID()
-	
-	// Build endpoint
+
 	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
 		url.PathEscape(roomID), url.PathEscape(txnID))
-	
-	// Add query parameters
+
 	params := url.Values{}
-	
-	// Add timestamp if AS token is available and timestamp is provided
 	if timestamp > 0 && c.asToken != "" {
 		params.Set("ts", strconv.FormatInt(timestamp, 10))
 	}
-	
-	// Add user_id parameter for AS to send on behalf of user
 	if senderUserID != "" && c.asToken != "" {
 		params.Set("user_id", senderUserID)
 	}
-	
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
-	
-	// Create message content
+
 	req := &SendMessageRequest{
 		MsgType: "m.text",
 		Body:    message,
 	}
-	
-	// Use AS token if available, otherwise use admin token
+	if formattedBody != "" {
+		req.Format = "org.matrix.custom.html"
+		req.FormattedBody = formattedBody
+	}
+
 	token := c.adminToken
 	if c.asToken != "" {
 		token = c.asToken
 	}
-	
-	// Make request
+
 	body, statusCode, err := c.doRequestWithToken("PUT", endpoint, req, token)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var resp SendMessageResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	if statusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
 	}
-	
+
 	return &resp, nil
 }
 
-// SendReplyWithTimestamp sends a reply to a message with a specific timestamp
-func (c *Client) SendReplyWithTimestamp(roomID, message string, replyToEventID string, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
+// SendReplyWithTimestamp sends a reply to a message with a specific timestamp.
+// formattedBody is optional HTML (org.matrix.custom.html); pass "" to omit it.
+func (c *Client) SendReplyWithTimestamp(roomID, message, formattedBody string, replyToEventID string, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
 	txnID := c.getNextTxnID()
-	
-	// Build endpoint
+
 	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
 		url.PathEscape(roomID), url.PathEscape(txnID))
-	
-	// Add query parameters
+
 	params := url.Values{}
-	
 	if timestamp > 0 && c.asToken != "" {
 		params.Set("ts", strconv.FormatInt(timestamp, 10))
 	}
-	
 	if senderUserID != "" && c.asToken != "" {
 		params.Set("user_id", senderUserID)
 	}
-	
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
-	
-	// Create reply content with relation
+
 	content := map[string]interface{}{
 		"msgtype": "m.text",
 		"body":    message,
@@ -606,27 +790,30 @@ func (c *Client) SendReplyWithTimestamp(roomID, message string, replyToEventID s
 			},
 		},
 	}
-	
-	// Use AS token if available
+	if formattedBody != "" {
+		content["format"] = "org.matrix.custom.html"
+		content["formatted_body"] = formattedBody
+	}
+
 	token := c.adminToken
 	if c.asToken != "" {
 		token = c.asToken
 	}
-	
+
 	body, statusCode, err := c.doRequestWithToken("PUT", endpoint, content, token)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var resp SendMessageResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	if statusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
 	}
-	
+
 	return &resp, nil
 }
 
@@ -744,8 +931,9 @@ func (c *Client) UploadMedia(data []byte, filename, contentType string) (*Upload
 	
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
-	
-	resp, err := c.httpClient.Do(req)
+
+	uploadClient := &http.Client{Timeout: mediaUploadHTTPTimeout}
+	resp, err := uploadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("upload request failed: %w", err)
 	}
@@ -755,16 +943,24 @@ func (c *Client) UploadMedia(data []byte, filename, contentType string) (*Upload
 	if err != nil {
 		return nil, fmt.Errorf("failed to read upload response: %w", err)
 	}
-	
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		var errResp UploadMediaResponse
+		if json.Unmarshal(body, &errResp) == nil && (errResp.Errcode != "" || errResp.Error != "") {
+			return nil, fmt.Errorf("upload failed (%d): %s - %s", resp.StatusCode, errResp.Errcode, errResp.Error)
+		}
+		return nil, fmt.Errorf("upload failed (HTTP %d), non-JSON body: %s", resp.StatusCode, uploadResponseSnippet(body, 400))
+	}
+
+	body = bytes.TrimSpace(body)
 	var result UploadMediaResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse upload response: %w", err)
+		return nil, fmt.Errorf("upload HTTP %d but invalid JSON: %w; body: %s", resp.StatusCode, err, uploadResponseSnippet(body, 400))
 	}
-	
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("upload failed (%d): %s - %s", resp.StatusCode, result.Errcode, result.Error)
+	if strings.TrimSpace(result.ContentURI) == "" {
+		return nil, fmt.Errorf("upload missing content_uri in JSON: %s", uploadResponseSnippet(body, 400))
 	}
-	
+
 	return &result, nil
 }
 
@@ -799,10 +995,10 @@ type ThumbnailInfo struct {
 // SendFileMessage sends a file message to a room
 func (c *Client) SendFileMessage(roomID string, content *FileMessageContent, timestamp int64, senderUserID string) (*SendMessageResponse, error) {
 	txnID := c.getNextTxnID()
-	
+
 	endpoint := fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
 		url.PathEscape(roomID), url.PathEscape(txnID))
-	
+
 	params := url.Values{}
 	if timestamp > 0 && c.asToken != "" {
 		params.Set("ts", strconv.FormatInt(timestamp, 10))
@@ -813,26 +1009,26 @@ func (c *Client) SendFileMessage(roomID string, content *FileMessageContent, tim
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
-	
+
 	token := c.adminToken
 	if c.asToken != "" {
 		token = c.asToken
 	}
-	
+
 	body, statusCode, err := c.doRequestWithToken("PUT", endpoint, content, token)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var resp SendMessageResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	if statusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error (%d): %s - %s", statusCode, resp.Errcode, resp.Error)
 	}
-	
+
 	return &resp, nil
 }
 
@@ -851,8 +1047,8 @@ func (c *Client) SendFileLink(roomID, filename, fileURL, mimeType string, fileSi
 	}
 	
 	message := fmt.Sprintf("%s [%s](%s)", emoji, filename, fileURL)
-	
-	return c.SendMessageWithTimestamp(roomID, message, timestamp, senderUserID)
+
+	return c.SendMessageWithTimestamp(roomID, message, "", timestamp, senderUserID)
 }
 
 // SendUploadedFile sends a file that was already uploaded to Matrix

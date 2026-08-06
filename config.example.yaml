@@ -33,25 +33,32 @@ mattermost:
   #   user: "mmuser"
   #   password_env: "MM_DB_PASSWORD"
   
+  # Export/import 1:1 DM channels (type D) as Matrix DM rooms (default: true)
+  # Requires re-export of assets after changing this setting
+  include_dms: true
+
   # File attachment migration settings
   files:
     # Migration mode:
-    #   "link"   - Keep S3/public URLs in messages (fastest, requires S3 public access)
-    #   "upload" - Download and re-upload files to Matrix (slowest, most portable)
-    #   "skip"   - Don't migrate files (fastest, messages only)
+    #   "link"   - Embed S3/public URLs as links in messages (fastest; requires s3_public_url)
+    #   "upload" - Read each file over SSH → upload to Matrix media repo (no S3 needed)
+    #   "skip"   - Ignore all attachments (messages only)
     mode: "link"
-    
-    # S3 public URL prefix for direct linking
-    # Files will be accessible at: {s3_public_url}/{file_path}
-    # Example: https://s3.example.com/mattermost-bucket
+
+    # --- link mode ---
+    # S3 public URL prefix. Files will be linked as: {s3_public_url}/{file_path}
     s3_public_url: "https://s3.example.com/mattermost-bucket"
-    
-    # Local data path (if using local file storage instead of S3)
-    # local_data_path: "/opt/mattermost/data"
-    
-    # Maximum file size to upload to Matrix (in MB)
-    # Files larger than this will be linked instead of uploaded
-    # Only applies when mode is "upload"
+
+    # --- upload mode ---
+    # Absolute path to the Mattermost data directory ON THE MATTERMOST SERVER.
+    # Required when mode is "upload". Not used in link or skip modes.
+    # The tool reads files over the existing SSH connection — nothing is saved locally.
+    # Example (default Mattermost install): /opt/mattermost/data
+    local_data_path: "/opt/mattermost/data"
+
+    # Maximum file size to upload to Matrix (in MB).
+    # Files larger than this limit are skipped with a warning.
+    # Only applies when mode is "upload". Default: 50
     max_upload_size_mb: 50
 
 # Matrix Synapse server configuration
@@ -78,6 +85,8 @@ matrix:
     port: 8008
     # Optional: Use existing admin token instead of login
     # admin_token_env: "MATRIX_ADMIN_TOKEN"
+    # Optional: MAS account API — user creation uses POST /api/admin/v1/users on this host when set
+    # mas_url: "https://account.example.org"
   
   # Login with admin username/password (recommended)
   # The tool will automatically get an access token
@@ -129,43 +138,47 @@ data:
 # ========================================
 #
 # If you're getting too many 429 (rate limit) errors during migration,
-# you can TEMPORARILY disable rate limiting on your Synapse server:
+# you can TEMPORARILY loosen limits in Synapse homeserver.yaml.
 #
-# Add this to your homeserver.yaml (Synapse config):
+# Do NOT use per_second: 0 AND burst_count: 0 — Synapse treats burst_count 0 as
+# "no burst allowance" and rejects almost every request (e.g. rc_login.address 429).
+# Use very large numbers instead, then restore defaults after migration.
+#
+# Example (homeserver.yaml):
 #
 #   rc_message:
-#     per_second: 0
-#     burst_count: 0
+#     per_second: 10000
+#     burst_count: 1000000
 #   rc_registration:
-#     per_second: 0
-#     burst_count: 0
+#     per_second: 10000
+#     burst_count: 1000000
 #   rc_login:
 #     address:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #     account:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #     failed_attempts:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #   rc_admin_redaction:
-#     per_second: 0
-#     burst_count: 0
+#     per_second: 10000
+#     burst_count: 1000000
 #   rc_joins:
 #     local:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #     remote:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #   rc_invites:
 #     per_room:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #     per_user:
-#       per_second: 0
-#       burst_count: 0
+#       per_second: 10000
+#       burst_count: 1000000
 #
 # IMPORTANT: Remember to restart Synapse and re-enable rate limiting
 # after the migration is complete for security!
@@ -178,8 +191,25 @@ data:
 # EXAMPLE CONFIGURATIONS
 # ========================================
 
-# Example 1: Both servers with SSH key
-# ------------------------------------
+# Example 1: Local mode (script, Mattermost, and Matrix on the same server)
+# -------------------------------------------------------------------------
+# No SSH configuration needed — connections go directly to localhost.
+#
+# mattermost:
+#   config_path: "/opt/mattermost/config/config.json"
+#   # database credentials are read automatically from config.json
+#
+# matrix:
+#   api:
+#     base_url: "http://localhost:8008"
+#   auth:
+#     username: "admin"
+#     password_env: "MATRIX_ADMIN_PASSWORD"
+#   homeserver: "company.com"
+
+
+# Example 2: Both servers with SSH key (remote mode)
+# ---------------------------------------------------
 # mattermost:
 #   ssh:
 #     host: "mm.company.com"
@@ -198,7 +228,7 @@ data:
 #   homeserver: "company.com"
 
 
-# Example 2: Mattermost with root password, Matrix with key
+# Example 3: Mattermost with root password, Matrix with key
 # ---------------------------------------------------------
 # mattermost:
 #   ssh:
@@ -218,7 +248,7 @@ data:
 #   homeserver: "company.com"
 
 
-# Example 3: Both with password auth
+# Example 4: Both with password auth
 # ----------------------------------
 # mattermost:
 #   ssh:

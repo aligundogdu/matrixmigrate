@@ -3,6 +3,7 @@
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -13,6 +14,14 @@ import (
 // RemoteExecutor executes commands on remote servers via SSH
 type RemoteExecutor struct {
 	client *ssh.Client
+	// sudoPassword, when non-empty, is sent on stdin for sudo -S when reading files (see ReadFile).
+	sudoPassword string
+}
+
+// SetFileReadSudoPassword enables sudo -S for ReadFile. The password is the remote account's
+// sudo password (not the SSH key passphrase). Prefer granting the SSH user read ACL instead.
+func (r *RemoteExecutor) SetFileReadSudoPassword(password string) {
+	r.sudoPassword = strings.TrimSpace(password)
 }
 
 // NewRemoteExecutor creates a new remote executor with key auth
@@ -46,6 +55,11 @@ func NewRemoteExecutorWithPassword(cfg config.SSHConfig, passphrase, password st
 	return &RemoteExecutor{client: client}, nil
 }
 
+// shellSingleQuoted escapes a path for safe use inside single quotes in a remote shell.
+func shellSingleQuoted(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
+}
+
 // Close closes the SSH connection
 func (r *RemoteExecutor) Close() error {
 	if r.client != nil {
@@ -56,6 +70,12 @@ func (r *RemoteExecutor) Close() error {
 
 // ReadFile reads a file from the remote server
 func (r *RemoteExecutor) ReadFile(path string) ([]byte, error) {
+	q := shellSingleQuoted(path)
+
+	if r.sudoPassword != "" {
+		return r.readFileWithSudoStdin(q)
+	}
+
 	session, err := r.client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
@@ -67,10 +87,44 @@ func (r *RemoteExecutor) ReadFile(path string) ([]byte, error) {
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	// Use cat to read the file, with sudo if needed
-	cmd := fmt.Sprintf("cat %s 2>/dev/null || sudo cat %s", path, path)
+	// Try unprivileged read first, then sudo -n only. Plain `sudo` over SSH is non-interactive
+	// and fails with "a terminal is required to read the password" when sudo would prompt.
+	cmd := fmt.Sprintf("cat %s 2>/dev/null || sudo -n cat %s", q, q)
 	if err := session.Run(cmd); err != nil {
-		return nil, fmt.Errorf("failed to read file: %s", stderr.String())
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if strings.Contains(msg, "a password is required") || strings.Contains(msg, "terminal is required") {
+			msg += " — fix: grant the SSH user read access to the Mattermost data directory (e.g. group/ACL), configure NOPASSWD, or set mattermost.ssh.file_read_sudo_password_env for sudo -S (see security note in config)."
+		}
+		return nil, fmt.Errorf("failed to read file: %s", msg)
+	}
+
+	return stdout.Bytes(), nil
+}
+
+// readFileWithSudoStdin runs: cat path || sudo -S cat path with password on stdin (non-interactive).
+func (r *RemoteExecutor) readFileWithSudoStdin(q string) ([]byte, error) {
+	session, err := r.client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	session.Stdin = bytes.NewReader([]byte(r.sudoPassword + "\n"))
+
+	cmd := fmt.Sprintf("bash -c \"cat %s 2>/dev/null || sudo -S -p '' cat %s\"", q, q)
+	if err := session.Run(cmd); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("failed to read file (sudo -S): %s", msg)
 	}
 
 	return stdout.Bytes(), nil
@@ -84,7 +138,7 @@ func (r *RemoteExecutor) FileExists(path string) (bool, error) {
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf("test -f %s && echo 'exists'", path)
+	cmd := fmt.Sprintf("test -f %s && echo 'exists'", shellSingleQuoted(path))
 	output, err := session.Output(cmd)
 	if err != nil {
 		return false, nil // File doesn't exist

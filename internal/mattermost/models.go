@@ -1,6 +1,9 @@
 ﻿package mattermost
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // User represents a Mattermost user
 type User struct {
@@ -95,6 +98,28 @@ func (c *Channel) IsDirect() bool {
 // IsGroup returns true if the channel is a group message
 func (c *Channel) IsGroup() bool {
 	return c.Type == "G"
+}
+
+// DMUserIDs parses the DM channel name (format: userA__userB) and returns the two user IDs
+// For self-DMs, both returned IDs are the same
+// Returns ok=false if the channel is not a DM or name format is invalid
+func (c *Channel) DMUserIDs() (userA, userB string, ok bool) {
+	if !c.IsDirect() {
+		return "", "", false
+	}
+
+	parts := strings.Split(c.Name, "__")
+	if len(parts) == 1 {
+		// Self-DM: single user ID
+		return parts[0], parts[0], true
+	}
+	if len(parts) == 2 {
+		// Standard DM: two user IDs
+		return parts[0], parts[1], true
+	}
+
+	// Invalid format
+	return "", "", false
 }
 
 // TeamMember represents a user's membership in a team

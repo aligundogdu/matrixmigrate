@@ -11,6 +11,7 @@ menu:
   import_memberships: "Import Memberships"
   export_messages: "Export Messages"
   import_messages: "Import Messages"
+  leave_rooms: "Leave All Rooms"
   test_connection: "Test Connection"
   test_mattermost: "Test Mattermost Connection"
   test_matrix: "Test Matrix Connection"

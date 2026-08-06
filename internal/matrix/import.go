@@ -97,6 +97,7 @@ func (i *Importer) ImportUsers(users []mattermost.User, existingMapping map[stri
 			DisplayName: displayName,
 			Admin:       false,
 			Deactivated: false,
+			Email:       strings.TrimSpace(user.Email),
 		}
 
 		resp, err := i.client.CreateUser(user.Username, req)
@@ -168,7 +169,12 @@ func (i *Importer) ImportTeamsAsSpaces(teams []mattermost.Team, existingMapping 
 }
 
 // ImportChannelsAsRooms imports channels from Mattermost as Matrix rooms
-func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
+func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, userMapping map[string]string, existingMapping map[string]string, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
+	return i.ImportChannelsAsRoomsWithDMs(channels, userMapping, existingMapping, true, progress)
+}
+
+// ImportChannelsAsRoomsWithDMs imports channels from Mattermost as Matrix rooms with optional DM support
+func (i *Importer) ImportChannelsAsRoomsWithDMs(channels []mattermost.Channel, userMapping map[string]string, existingMapping map[string]string, migrateDMs bool, progress ImportProgressCallback) (map[string]string, *ImportStats, error) {
 	mapping := make(map[string]string)
 	stats := &ImportStats{}
 	total := len(channels)
@@ -189,9 +195,23 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existing
 			continue
 		}
 
-		// Skip direct messages (2-person DMs)
+		// Handle direct messages
 		if channel.IsDirect() {
-			stats.RoomsSkipped++
+			if !migrateDMs {
+				stats.DMRoomsSkipped++
+				continue
+			}
+			roomID, err := i.importDMAsRoom(channel, userMapping, existingMapping)
+			if err != nil {
+				logger.Warn("Failed to import DM: %v", err)
+				stats.DMRoomsFailed++
+			} else if roomID != "" {
+				mapping[channel.ID] = roomID
+				stats.DMRoomsCreated++
+				logger.Success("Created DM room -> %s", roomID)
+			} else {
+				stats.DMRoomsSkipped++
+			}
 			continue
 		}
 
@@ -218,9 +238,116 @@ func (i *Importer) ImportChannelsAsRooms(channels []mattermost.Channel, existing
 		logger.Success("Created room '%s' -> %s", channel.DisplayName, resp.RoomID)
 		mapping[channel.ID] = resp.RoomID
 		stats.RoomsCreated++
+
+		// Grant the channel creator admin power level (100) so they own the room.
+		if creatorMxID, ok := userMapping[channel.CreatorID]; ok && creatorMxID != "" {
+			if plErr := i.client.SetUserPowerLevel(resp.RoomID, creatorMxID, 100); plErr != nil {
+				logger.Warn("Failed to set creator power level for room '%s': %v", channel.DisplayName, plErr)
+			}
+		}
 	}
 
 	return mapping, stats, nil
+}
+
+// matrixLocalpart returns the local part of a Matrix ID (@alice:domain -> alice).
+func matrixLocalpart(mxid string) string {
+	s := strings.TrimPrefix(strings.TrimSpace(mxid), "@")
+	idx := strings.IndexByte(s, ':')
+	if idx < 0 {
+		return s
+	}
+	return s[:idx]
+}
+
+// dmRoomDisplayTitle picks a Matrix room title for an imported DM before the migration user leaves.
+func dmRoomDisplayTitle(channel mattermost.Channel, mxUserA, mxUserB string, selfDM bool) string {
+	if n := strings.TrimSpace(channel.DisplayName); n != "" {
+		return n
+	}
+	if selfDM {
+		return matrixLocalpart(mxUserA) + " (You)"
+	}
+	return matrixLocalpart(mxUserA) + " & " + matrixLocalpart(mxUserB)
+}
+
+// importDMAsRoom imports a Mattermost DM channel as a Matrix DM room
+// Returns the room ID if successful, empty string if skipped, error if failed
+func (i *Importer) importDMAsRoom(channel mattermost.Channel, userMapping map[string]string, existingMapping map[string]string) (string, error) {
+	// Skip if already imported
+	if roomID, exists := existingMapping[channel.ID]; exists {
+		logger.Info("DM room already imported, skipped")
+		return roomID, nil
+	}
+
+	// Parse DM user IDs
+	mmUserA, mmUserB, ok := channel.DMUserIDs()
+	if !ok {
+		return "", fmt.Errorf("invalid DM channel name format: %s", channel.Name)
+	}
+
+	// Look up both users in mapping
+	mxUserA, existsA := userMapping[mmUserA]
+	mxUserB, existsB := userMapping[mmUserB]
+
+	if !existsA || !existsB {
+		if !existsA {
+			logger.Warn("DM user %s not in mapping, skipping DM", mmUserA)
+		}
+		if !existsB {
+			logger.Warn("DM user %s not in mapping, skipping DM", mmUserB)
+		}
+		return "", nil
+	}
+
+	invites := []string{mxUserA, mxUserB}
+	isSelfDM := mxUserA == mxUserB
+	if isSelfDM {
+		// Self-DM: Matrix createRoom must not list the same MXID twice in invite.
+		invites = []string{mxUserA}
+		logger.Info(
+			"Creating self-DM room for Mattermost user %s -> Matrix %s (channel %s)",
+			mmUserA, mxUserA, channel.ID,
+		)
+	}
+
+	topic := channel.Purpose
+	if topic == "" {
+		topic = channel.Header
+	}
+	roomName := dmRoomDisplayTitle(channel, mxUserA, mxUserB, isSelfDM)
+
+	// Create DM room with user(s) invited
+	resp, err := i.client.CreateDMRoom(roomName, topic, invites)
+	if err != nil {
+		return "", fmt.Errorf("failed to create DM room: %w", err)
+	}
+
+	if isSelfDM {
+		logger.Info("Created self-DM room %s for user %s", resp.RoomID, mxUserA)
+	} else {
+		logger.Info("Created DM room %s for users %s and %s", resp.RoomID, mxUserA, mxUserB)
+	}
+
+	// Force-join user(s) using Admin API (no invitation acceptance required)
+	if err := i.client.ForceJoinUser(resp.RoomID, mxUserA); err != nil {
+		logger.Warn("Failed to force-join %s to DM: %v", mxUserA, err)
+		// Continue even if one user fails to join
+	}
+	if mxUserA != mxUserB {
+		if err := i.client.ForceJoinUser(resp.RoomID, mxUserB); err != nil {
+			logger.Warn("Failed to force-join %s to DM: %v", mxUserB, err)
+			// Continue even if one user fails to join
+		}
+	}
+
+	// Remove admin user from DM room (DMs should only contain the two participants)
+	if err := i.client.LeaveRoom(resp.RoomID); err != nil {
+		logger.Warn("Failed to remove admin from DM room: %v", err)
+		// Non-critical error - room is still functional
+	}
+
+	return resp.RoomID, nil
 }
 
 // ApplyTeamMemberships invites users to spaces based on team memberships
@@ -269,6 +396,13 @@ func (i *Importer) ApplyTeamMemberships(
 			logger.Error("Team membership %d/%d failed: %s -> %s: %v", idx+1, total, userID, spaceID, err)
 			stats.MembersFailed++
 			continue
+		}
+
+		// Team admins get moderator power level (50) in the space.
+		if membership.IsAdmin() {
+			if plErr := i.client.SetUserPowerLevel(spaceID, userID, 50); plErr != nil {
+				logger.Warn("Failed to set moderator power level for %s in space %s: %v", userID, spaceID, plErr)
+			}
 		}
 
 		logger.Success("Team membership %d/%d: %s added to space", idx+1, total, userID)
@@ -320,6 +454,13 @@ func (i *Importer) ApplyChannelMemberships(
 			logger.Error("Channel membership %d/%d failed: %s -> %s: %v", idx+1, total, userID, roomID, err)
 			stats.MembersFailed++
 			continue
+		}
+
+		// Channel admins get moderator power level (50) so they can manage the room.
+		if membership.IsAdmin() {
+			if plErr := i.client.SetUserPowerLevel(roomID, userID, 50); plErr != nil {
+				logger.Warn("Failed to set moderator power level for %s in %s: %v", userID, roomID, plErr)
+			}
 		}
 
 		logger.Success("Channel membership %d/%d: %s added to room", idx+1, total, userID)
@@ -380,6 +521,44 @@ func (i *Importer) LinkRoomsToSpaces(
 	return stats, nil
 }
 
+// LeaveAllRooms makes the migration admin user leave all created rooms and spaces.
+// Should be called after all memberships have been applied.
+func (i *Importer) LeaveAllRooms(
+	spaceMapping map[string]string,
+	roomMapping map[string]string,
+	progress ImportProgressCallback,
+) *ImportStats {
+	stats := &ImportStats{}
+
+	// Collect unique room/space IDs
+	roomIDs := make(map[string]bool)
+	for _, id := range spaceMapping {
+		roomIDs[id] = true
+	}
+	for _, id := range roomMapping {
+		roomIDs[id] = true
+	}
+
+	total := len(roomIDs)
+	idx := 0
+	for roomID := range roomIDs {
+		idx++
+		if progress != nil {
+			progress("leave_rooms", idx, total, roomID)
+		}
+		if err := i.client.LeaveRoom(roomID); err != nil {
+			logger.Warn("Failed to leave room %s: %v", roomID, err)
+			stats.RoomsLeftFailed++
+		} else {
+			logger.Info("Admin left room %s", roomID)
+			stats.RoomsLeft++
+		}
+	}
+
+	logger.Info("Admin user left %d rooms (%d failed)", stats.RoomsLeft, stats.RoomsLeftFailed)
+	return stats
+}
+
 // ImportAssetsResult holds the result of importing assets
 type ImportAssetsResult struct {
 	UserMapping  map[string]string
@@ -398,12 +577,17 @@ type ExistingMappings struct {
 // ImportAssets imports all assets (users, teams as spaces, channels as rooms)
 // If existingMappings is provided, already imported items will be skipped
 func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *ExistingMappings, progress ImportProgressCallback) (*ImportAssetsResult, error) {
+	return i.ImportAssetsWithDMs(assets, existingMappings, true, progress)
+}
+
+// ImportAssetsWithDMs imports all assets with optional DM support
+func (i *Importer) ImportAssetsWithDMs(assets *mattermost.Assets, existingMappings *ExistingMappings, migrateDMs bool, progress ImportProgressCallback) (*ImportAssetsResult, error) {
 	result := &ImportAssetsResult{
 		Stats: &ImportStats{},
 	}
 
 	logger.Info("=== ImportAssets Started ===")
-	logger.Info("Assets to import: %d users, %d teams, %d channels", 
+	logger.Info("Assets to import: %d users, %d teams, %d channels",
 		len(assets.Users), len(assets.Teams), len(assets.Channels))
 
 	// Initialize empty mappings if not provided
@@ -444,7 +628,7 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *Exi
 	result.Stats.SpacesFailed = spaceStats.SpacesFailed
 
 	// Import channels as rooms
-	roomMapping, roomStats, err := i.ImportChannelsAsRooms(assets.Channels, existingMappings.Rooms, progress)
+	roomMapping, roomStats, err := i.ImportChannelsAsRoomsWithDMs(assets.Channels, userMapping, existingMappings.Rooms, migrateDMs, progress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import channels: %w", err)
 	}
@@ -452,6 +636,9 @@ func (i *Importer) ImportAssets(assets *mattermost.Assets, existingMappings *Exi
 	result.Stats.RoomsCreated = roomStats.RoomsCreated
 	result.Stats.RoomsSkipped = roomStats.RoomsSkipped
 	result.Stats.RoomsFailed = roomStats.RoomsFailed
+	result.Stats.DMRoomsCreated = roomStats.DMRoomsCreated
+	result.Stats.DMRoomsSkipped = roomStats.DMRoomsSkipped
+	result.Stats.DMRoomsFailed = roomStats.DMRoomsFailed
 
 	return result, nil
 }
@@ -470,13 +657,24 @@ type MessageImportStats struct {
 
 // FileConfig holds file migration settings
 type FileConfig struct {
-	Mode         string // "link", "upload", or "skip"
-	S3PublicURL  string // Base URL for S3 files
-	MaxUploadSize int64 // Max file size for upload
+	Mode          string // "link", "upload", or "skip"
+	S3PublicURL   string // Base URL for S3 files
+	MaxUploadSize int64  // Max file size for upload in bytes
+	LocalDataPath string // Base path for file storage on the Mattermost server
+	// ReadFile reads raw bytes from a file path. Injected by the orchestrator:
+	// os.ReadFile for local mode, RemoteExecutor.ReadFile for SSH mode.
+	ReadFile func(path string) ([]byte, error)
+	// UsernameToMxID maps Mattermost usernames to Matrix user IDs for @mention pills.
+	UsernameToMxID map[string]string
 }
 
 // MessageImportCallback is called for each message imported
 type MessageImportCallback func(current, total int, channelName string, status string)
+
+func logMmSendFailure(op string, post mattermost.Post, roomID, senderMxID string, err error) {
+	logger.Error("%s: post=%s channel=%s room=%s mm_user=%s sender_mx=%q: %v",
+		op, post.ID, post.ChannelID, roomID, post.UserID, senderMxID, err)
+}
 
 // ImportMessagesResult contains the result of message import
 type ImportMessagesResult struct {
@@ -489,9 +687,10 @@ type ImportMessagesResult struct {
 // This requires Application Service token for timestamp support
 func (i *Importer) ImportMessages(
 	posts []mattermost.Post,
-	channelToRoom map[string]string,      // Mattermost channel ID -> Matrix room ID
-	userMapping map[string]string,         // Mattermost user ID -> Matrix user ID
-	existingMapping map[string]string,     // Mattermost post ID -> Matrix event ID (for resume)
+	channelToRoom map[string]string,  // Mattermost channel ID -> Matrix room ID
+	userMapping map[string]string,    // Mattermost user ID -> Matrix user ID
+	existingMapping map[string]string, // Mattermost post ID -> Matrix event ID (for resume)
+	usernameToMxID map[string]string, // Mattermost username -> Matrix user ID (for @mention pills)
 	progress MessageImportCallback,
 ) (*ImportMessagesResult, error) {
 	result := &ImportMessagesResult{
@@ -530,7 +729,9 @@ func (i *Importer) ImportMessages(
 		roomID, roomExists := channelToRoom[post.ChannelID]
 		if !roomExists {
 			result.Stats.MessagesFailed++
-			result.Errors = append(result.Errors, fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID))
+			errTxt := fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID)
+			result.Errors = append(result.Errors, errTxt)
+			logger.Error("message import no room mapping: %s", errTxt)
 			if progress != nil {
 				progress(idx+1, total, post.ChannelID, "failed:no_room")
 			}
@@ -548,19 +749,21 @@ func (i *Importer) ImportMessages(
 		// Handle reply
 		var eventID string
 		
+		_, formattedBody := FormatMessage(post.Message, usernameToMxID)
+
 		if post.IsReply() {
-			// This is a reply - find parent event ID
 			parentEventID, parentExists := result.Mapping[post.RootID]
 			if !parentExists {
-				// Parent not yet imported or doesn't exist
 				result.Stats.RepliesFailed++
-				result.Errors = append(result.Errors, fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID))
-				
-				// Import as regular message instead of failing
-				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, post.CreateAt, senderID)
+				parentErr := fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID)
+				result.Errors = append(result.Errors, parentErr)
+				logger.Warn("message import %s — sending reply body as standalone message instead", parentErr)
+
+				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, formattedBody, post.CreateAt, senderID)
 				if sendErr != nil {
 					result.Stats.MessagesFailed++
 					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+					logMmSendFailure("SendMessage(repair orphan reply)", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:send_error")
 					}
@@ -568,11 +771,11 @@ func (i *Importer) ImportMessages(
 				}
 				eventID = resp.EventID
 			} else {
-				// Send as reply
-				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, post.Message, parentEventID, post.CreateAt, senderID)
+				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, post.Message, formattedBody, parentEventID, post.CreateAt, senderID)
 				if sendErr != nil {
 					result.Stats.RepliesFailed++
 					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
+					logMmSendFailure("SendReply", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:reply_error")
 					}
@@ -582,11 +785,11 @@ func (i *Importer) ImportMessages(
 				result.Stats.RepliesImported++
 			}
 		} else {
-			// Regular message
-			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, post.CreateAt, senderID)
+			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, post.Message, formattedBody, post.CreateAt, senderID)
 			if sendErr != nil {
 				result.Stats.MessagesFailed++
 				result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+				logMmSendFailure("SendMessage", post, roomID, senderID, sendErr)
 				if progress != nil {
 					progress(idx+1, total, post.ChannelID, "failed:send_error")
 				}
@@ -594,25 +797,23 @@ func (i *Importer) ImportMessages(
 			}
 			eventID = resp.EventID
 		}
-		
-		// Store mapping
+
 		result.Mapping[post.ID] = eventID
 		result.Stats.MessagesImported++
-		
+
 		if progress != nil {
 			progress(idx+1, total, post.ChannelID, "imported")
 		}
-		
-		// Log progress every 100 messages
-		if (idx+1) % 100 == 0 {
+
+		if (idx+1)%100 == 0 {
 			logger.Info("Message import progress: %d/%d (%.1f%%)", idx+1, total, float64(idx+1)/float64(total)*100)
 		}
 	}
-	
+
 	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d",
-		result.Stats.MessagesImported, result.Stats.MessagesSkipped, 
+		result.Stats.MessagesImported, result.Stats.MessagesSkipped,
 		result.Stats.MessagesFailed, result.Stats.RepliesImported)
-	
+
 	return result, nil
 }
 
@@ -665,7 +866,9 @@ func (i *Importer) ImportMessagesWithFiles(
 		roomID, roomExists := channelToRoom[post.ChannelID]
 		if !roomExists {
 			result.Stats.MessagesFailed++
-			result.Errors = append(result.Errors, fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID))
+			errTxt := fmt.Sprintf("No room mapping for channel %s (post %s)", post.ChannelID, post.ID)
+			result.Errors = append(result.Errors, errTxt)
+			logger.Error("message import no room mapping: %s", errTxt)
 			if progress != nil {
 				progress(idx+1, total, post.ChannelID, "failed:no_room")
 			}
@@ -682,8 +885,8 @@ func (i *Importer) ImportMessagesWithFiles(
 		// Build message content with files
 		messageContent := post.Message
 		files := filesByPost[post.ID]
-		
-		// Append file links if mode is "link"
+
+		// "link" mode: embed S3 URLs directly into the text message
 		if fileConfig.Mode == "link" && len(files) > 0 && fileConfig.S3PublicURL != "" {
 			for _, file := range files {
 				fileURL := strings.TrimSuffix(fileConfig.S3PublicURL, "/") + "/" + file.Path
@@ -691,20 +894,26 @@ func (i *Importer) ImportMessagesWithFiles(
 				result.Stats.FilesLinked++
 			}
 		}
-		
+
+		// Render Markdown and resolve @mention pills for Matrix HTML rendering.
+		_, formattedBody := FormatMessage(messageContent, fileConfig.UsernameToMxID)
+
 		// Handle reply
 		var eventID string
-		
+
 		if post.IsReply() {
 			parentEventID, parentExists := result.Mapping[post.RootID]
 			if !parentExists {
 				result.Stats.RepliesFailed++
-				result.Errors = append(result.Errors, fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID))
-				
-				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, post.CreateAt, senderID)
+				parentErr := fmt.Sprintf("Parent post %s not found for reply %s", post.RootID, post.ID)
+				result.Errors = append(result.Errors, parentErr)
+				logger.Warn("message import %s — sending reply body as standalone message instead", parentErr)
+
+				resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, formattedBody, post.CreateAt, senderID)
 				if sendErr != nil {
 					result.Stats.MessagesFailed++
 					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+					logMmSendFailure("SendMessage(repair orphan reply)", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:send_error")
 					}
@@ -712,10 +921,11 @@ func (i *Importer) ImportMessagesWithFiles(
 				}
 				eventID = resp.EventID
 			} else {
-				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, messageContent, parentEventID, post.CreateAt, senderID)
+				resp, sendErr := i.client.SendReplyWithTimestamp(roomID, messageContent, formattedBody, parentEventID, post.CreateAt, senderID)
 				if sendErr != nil {
 					result.Stats.RepliesFailed++
 					result.Errors = append(result.Errors, fmt.Sprintf("Failed to send reply %s: %v", post.ID, sendErr))
+					logMmSendFailure("SendReply", post, roomID, senderID, sendErr)
 					if progress != nil {
 						progress(idx+1, total, post.ChannelID, "failed:reply_error")
 					}
@@ -725,10 +935,11 @@ func (i *Importer) ImportMessagesWithFiles(
 				result.Stats.RepliesImported++
 			}
 		} else {
-			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, post.CreateAt, senderID)
+			resp, sendErr := i.client.SendMessageWithTimestamp(roomID, messageContent, formattedBody, post.CreateAt, senderID)
 			if sendErr != nil {
 				result.Stats.MessagesFailed++
 				result.Errors = append(result.Errors, fmt.Sprintf("Failed to send message %s: %v", post.ID, sendErr))
+				logMmSendFailure("SendMessage", post, roomID, senderID, sendErr)
 				if progress != nil {
 					progress(idx+1, total, post.ChannelID, "failed:send_error")
 				}
@@ -736,25 +947,86 @@ func (i *Importer) ImportMessagesWithFiles(
 			}
 			eventID = resp.EventID
 		}
-		
+
+		// "upload" mode: read each file from Mattermost storage and upload to Matrix.
+		// Runs after the text message so the parent event already exists in the room.
+		if fileConfig.Mode == "upload" && len(files) > 0 && fileConfig.ReadFile != nil {
+			for _, file := range files {
+				// Skip files that exceed the size limit
+				if fileConfig.MaxUploadSize > 0 && file.Size > fileConfig.MaxUploadSize {
+					logger.Warn("File %s (%d bytes) exceeds max upload size (%d bytes), skipping",
+						file.Name, file.Size, fileConfig.MaxUploadSize)
+					result.Stats.FilesSkipped++
+					continue
+				}
+
+				// Build full path: localDataPath + "/" + relative path from DB
+				fullPath := strings.TrimSuffix(fileConfig.LocalDataPath, "/") + "/" + file.Path
+
+				data, readErr := fileConfig.ReadFile(fullPath)
+				if readErr != nil {
+					logger.Warn("Failed to read file %s (%s): %v — skipping", file.Name, fullPath, readErr)
+					result.Stats.FilesSkipped++
+					continue
+				}
+
+				mimeType := file.MimeType
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+
+				uploadResp, uploadErr := i.client.UploadMedia(data, file.Name, mimeType)
+				if uploadErr != nil {
+					logger.Warn("Failed to upload file %s to Matrix: %v — skipping", file.Name, uploadErr)
+					result.Stats.FilesSkipped++
+					continue
+				}
+
+				fileContent := &FileMessageContent{
+					MsgType:  file.GetMatrixMsgType(),
+					Body:     file.Name,
+					URL:      uploadResp.ContentURI,
+					Filename: file.Name,
+					Info: &FileInfo{
+						MimeType: mimeType,
+						Size:     file.Size,
+						Width:    file.Width,
+						Height:   file.Height,
+					},
+				}
+
+				_, sendErr := i.client.SendFileMessage(roomID, fileContent, post.CreateAt, senderID)
+				if sendErr != nil {
+					logger.Warn("Failed to send file event for %s: %v — skipping", file.Name, sendErr)
+					result.Stats.FilesSkipped++
+					continue
+				}
+
+				logger.Success("File transferred to Matrix: %s (%d bytes) room=%s uri=%s", file.Name, len(data), roomID, uploadResp.ContentURI)
+				result.Stats.FilesUploaded++
+			}
+		}
+
 		// Store mapping
 		result.Mapping[post.ID] = eventID
 		result.Stats.MessagesImported++
-		
+
 		if progress != nil {
 			progress(idx+1, total, post.ChannelID, "imported")
 		}
-		
+
 		// Log progress every 100 messages
-		if (idx+1) % 100 == 0 {
-			logger.Info("Message import progress: %d/%d (%.1f%%) - files linked: %d",
-				idx+1, total, float64(idx+1)/float64(total)*100, result.Stats.FilesLinked)
+		if (idx+1)%100 == 0 {
+			logger.Info("Message import progress: %d/%d (%.1f%%) - linked: %d, uploaded: %d, skipped: %d",
+				idx+1, total, float64(idx+1)/float64(total)*100,
+				result.Stats.FilesLinked, result.Stats.FilesUploaded, result.Stats.FilesSkipped)
 		}
 	}
-	
-	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d, files_linked=%d",
-		result.Stats.MessagesImported, result.Stats.MessagesSkipped, 
-		result.Stats.MessagesFailed, result.Stats.RepliesImported, result.Stats.FilesLinked)
+
+	logger.Info("Message import completed: imported=%d, skipped=%d, failed=%d, replies=%d, files_linked=%d, files_uploaded=%d, files_skipped=%d",
+		result.Stats.MessagesImported, result.Stats.MessagesSkipped,
+		result.Stats.MessagesFailed, result.Stats.RepliesImported,
+		result.Stats.FilesLinked, result.Stats.FilesUploaded, result.Stats.FilesSkipped)
 	
 	return result, nil
 }
